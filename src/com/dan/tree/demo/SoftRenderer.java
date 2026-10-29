@@ -145,7 +145,7 @@ public final class SoftRenderer {
                 tri[t++] = a; tri[t++] = c; tri[t++] = b;
                 tri[t++] = b; tri[t++] = c; tri[t++] = d;
             }
-        raster(project(pos, pos.length / 3), col, tri, tri.length / 3);
+        raster(project(pos, pos.length / 3), col, tri, tri.length / 3, null, null, null);
     }
 
     /**
@@ -195,19 +195,32 @@ public final class SoftRenderer {
             }
         });
         float[] scr = project(world, n);
+        // Texturen: je Dreieck 0 keine, 1 Rinde, 2 Laub
+        Texture[] texs = {null, m.barkTextured ? texture(sp.texture(a.barkTexture)) : null,
+                m.leafTextured ? texture(sp.texture(a.leafTexture)) : null};
+        float[] uv = null;
+        if (texs[1] != null || texs[2] != null) {
+            uv = new float[n * 2];
+            for (int i = 0; i < n; i++) {
+                uv[i * 2] = v[i * TreeMesh.STRIDE + TreeMesh.U];
+                uv[i * 2 + 1] = v[i * TreeMesh.STRIDE + TreeMesh.V];
+            }
+        }
         // verborgene Blätter: Dreieck auslassen
         int[] tri = m.tri;
         int nt = m.triangles;
         int[] keep = new int[nt * 3];
+        byte[] which = new byte[nt];
         int k = 0;
         for (int i = 0; i < nt; i++) {
             int i0 = tri[i * 3], i1 = tri[i * 3 + 1], i2 = tri[i * 3 + 2];
             if (hidden[i0] || hidden[i1] || hidden[i2]) continue;
+            if (uv != null && m.textured(i0)) which[k / 3] = (byte) (m.leaf(i0) ? 2 : 1);
             keep[k++] = i0;
             keep[k++] = i1;
             keep[k++] = i2;
         }
-        raster(scr, col, keep, k / 3);
+        raster(scr, col, keep, k / 3, uv, which, texs);
     }
 
     /** Welt → Bildpunkte: x, y, z (Tiefe), w (≤ 0: hinter der Kamera). */
@@ -232,7 +245,7 @@ public final class SoftRenderer {
     }
 
     /** Dreiecke in waagerechten Streifen parallel zeichnen. */
-    private void raster(float[] s, float[] col, int[] tri, int nt) {
+    private void raster(float[] s, float[] col, int[] tri, int nt, float[] uv, byte[] which, Texture[] texs) {
         int bands = Math.max(1, Runtime.getRuntime().availableProcessors() * 2);
         int bh = (height + bands - 1) / bands;
         IntStream.range(0, bands).parallel().forEach(band -> {
@@ -243,12 +256,13 @@ public final class SoftRenderer {
                 float ay = s[a * 4 + 1], by = s[b * 4 + 1], cy = s[c * 4 + 1];
                 float minY = Math.min(ay, Math.min(by, cy)), maxY = Math.max(ay, Math.max(by, cy));
                 if (maxY < y0 || minY >= y1) continue;
-                fill(s, col, a, b, c, y0, y1);
+                Texture tex = which == null ? null : texs[which[t]];
+                fill(s, col, a, b, c, y0, y1, uv, tex);
             }
         });
     }
 
-    private void fill(float[] s, float[] col, int a, int b, int c, int y0, int y1) {
+    private void fill(float[] s, float[] col, int a, int b, int c, int y0, int y1, float[] uv, Texture tex) {
         float ax = s[a * 4], ay = s[a * 4 + 1], az = s[a * 4 + 2];
         float bx = s[b * 4], by = s[b * 4 + 1], bz = s[b * 4 + 2];
         float cx = s[c * 4], cy = s[c * 4 + 1], cz = s[c * 4 + 2];
@@ -262,6 +276,16 @@ public final class SoftRenderer {
         int maxY = Math.min(y1 - 1, (int) Math.ceil(Math.max(ay, Math.max(by, cy))));
         if (minX > maxX || minY > maxY) return;
         float inv = 1 / area;
+        float[] texel = tex != null ? new float[4] : null;
+        int level = 0;
+        float ua = 0, va = 0, ub = 0, vb = 0, uc = 0, vc = 0;
+        if (tex != null) {
+            ua = uv[a * 2]; va = uv[a * 2 + 1];
+            ub = uv[b * 2]; vb = uv[b * 2 + 1];
+            uc = uv[c * 2]; vc = uv[c * 2 + 1];
+            float texels = Math.abs((ub - ua) * (vc - va) - (uc - ua) * (vb - va)) * tex.w * tex.h;
+            level = tex.level(texels / Math.abs(area));
+        }
         // sehr kleine Dreiecke: ein Punkt in der Mitte, damit feine Zweige nicht verschwinden
         boolean tiny = maxX - minX <= 1 && maxY - minY <= 1;
         if (tiny) {
@@ -270,10 +294,16 @@ public final class SoftRenderer {
             float z = (az + bz + cz) / 3;
             int i = py * width + px;
             if (z < depth[i]) {
+                float tr = 1, tg = 1, tb = 1;
+                if (tex != null) {
+                    tex.sample((ua + ub + uc) / 3, (va + vb + vc) / 3, level, texel);
+                    if (texel[3] < 0.5f) return;
+                    tr = texel[0]; tg = texel[1]; tb = texel[2];
+                }
                 depth[i] = z;
-                fr[i] = (col[a * 3] + col[b * 3] + col[c * 3]) / 3;
-                fg[i] = (col[a * 3 + 1] + col[b * 3 + 1] + col[c * 3 + 1]) / 3;
-                fb[i] = (col[a * 3 + 2] + col[b * 3 + 2] + col[c * 3 + 2]) / 3;
+                fr[i] = (col[a * 3] + col[b * 3] + col[c * 3]) / 3 * tr;
+                fg[i] = (col[a * 3 + 1] + col[b * 3 + 1] + col[c * 3 + 1]) / 3 * tg;
+                fb[i] = (col[a * 3 + 2] + col[b * 3 + 2] + col[c * 3 + 2]) / 3 * tb;
             }
             return;
         }
@@ -288,11 +318,101 @@ public final class SoftRenderer {
                 float z = w0 * az + w1 * bz + w2 * cz;
                 int i = y * width + x;
                 if (z >= depth[i]) continue;
+                float tr = 1, tg = 1, tb = 1;
+                if (tex != null) {
+                    tex.sample(w0 * ua + w1 * ub + w2 * uc, w0 * va + w1 * vb + w2 * vc, level, texel);
+                    if (texel[3] < 0.5f) continue;
+                    tr = texel[0]; tg = texel[1]; tb = texel[2];
+                }
                 depth[i] = z;
-                fr[i] = w0 * col[a * 3] + w1 * col[b * 3] + w2 * col[c * 3];
-                fg[i] = w0 * col[a * 3 + 1] + w1 * col[b * 3 + 1] + w2 * col[c * 3 + 1];
-                fb[i] = w0 * col[a * 3 + 2] + w1 * col[b * 3 + 2] + w2 * col[c * 3 + 2];
+                fr[i] = (w0 * col[a * 3] + w1 * col[b * 3] + w2 * col[c * 3]) * tr;
+                fg[i] = (w0 * col[a * 3 + 1] + w1 * col[b * 3 + 1] + w2 * col[c * 3 + 1]) * tg;
+                fb[i] = (w0 * col[a * 3 + 2] + w1 * col[b * 3 + 2] + w2 * col[c * 3 + 2]) * tb;
             }
+        }
+    }
+
+    // ------------------------------------------------------------------ Texturen
+
+    private final java.util.IdentityHashMap<BufferedImage, Texture> textures = new java.util.IdentityHashMap<>();
+
+    private synchronized Texture texture(BufferedImage img) {
+        return img == null ? null : textures.computeIfAbsent(img, Texture::new);
+    }
+
+    /** Textur mit Mip-Stufen (Farbe nach Alpha gewichtet gemittelt), Abtastung nächster Punkt, wiederholt. */
+    static final class Texture {
+        static final float[] LINEAR = new float[256];
+
+        static {
+            for (int i = 0; i < 256; i++) {
+                double c = i / 255.0;
+                LINEAR[i] = (float) (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+            }
+        }
+
+        final int w, h;
+        final int[][] levels;
+        final int[] lw, lh;
+
+        Texture(BufferedImage img) {
+            w = img.getWidth();
+            h = img.getHeight();
+            java.util.List<int[]> ls = new java.util.ArrayList<>();
+            java.util.List<Integer> ws = new java.util.ArrayList<>(), hs = new java.util.ArrayList<>();
+            int[] cur = img.getRGB(0, 0, w, h, null, 0, w);
+            if (!img.getColorModel().hasAlpha()) for (int i = 0; i < cur.length; i++) cur[i] |= 0xFF000000;
+            int cw = w, ch = h;
+            ls.add(cur);
+            ws.add(cw);
+            hs.add(ch);
+            while (cw > 1 || ch > 1) {
+                int nw = Math.max(1, cw / 2), nh = Math.max(1, ch / 2);
+                int[] nx = new int[nw * nh];
+                for (int y = 0; y < nh; y++)
+                    for (int x = 0; x < nw; x++) {
+                        float r = 0, g = 0, b = 0, al = 0;
+                        for (int k = 0; k < 4; k++) {
+                            int sx = Math.min(cw - 1, x * 2 + (k & 1)), sy = Math.min(ch - 1, y * 2 + (k >> 1));
+                            int p = cur[sy * cw + sx];
+                            float pa = (p >>> 24) / 255f;
+                            r += ((p >> 16) & 255) * pa;
+                            g += ((p >> 8) & 255) * pa;
+                            b += (p & 255) * pa;
+                            al += pa;
+                        }
+                        int ia = Math.round(al / 4 * 255);
+                        int ir = al > 0 ? Math.round(r / al) : 0, ig = al > 0 ? Math.round(g / al) : 0, ib = al > 0 ? Math.round(b / al) : 0;
+                        nx[y * nw + x] = ia << 24 | ir << 16 | ig << 8 | ib;
+                    }
+                cur = nx;
+                cw = nw;
+                ch = nh;
+                ls.add(cur);
+                ws.add(cw);
+                hs.add(ch);
+            }
+            levels = ls.toArray(new int[0][]);
+            lw = ws.stream().mapToInt(Integer::intValue).toArray();
+            lh = hs.stream().mapToInt(Integer::intValue).toArray();
+        }
+
+        /** Mip-Stufe für so viele Texel je Bildpunkt. */
+        int level(float texelsPerPixel) {
+            if (!(texelsPerPixel > 1)) return 0;
+            int l = (int) (0.5 * Math.log(texelsPerPixel) / Math.log(2));
+            return Math.min(levels.length - 1, Math.max(0, l));
+        }
+
+        /** rgba nach out, Farbe linear, Alpha 0..1. */
+        void sample(float u, float v, int level, float[] out) {
+            int W = lw[level], H = lh[level];
+            int x = Math.floorMod((int) Math.floor(u * W), W), y = Math.floorMod((int) Math.floor(v * H), H);
+            int p = levels[level][y * W + x];
+            out[0] = LINEAR[(p >> 16) & 255];
+            out[1] = LINEAR[(p >> 8) & 255];
+            out[2] = LINEAR[p & 255];
+            out[3] = (p >>> 24) / 255f;
         }
     }
 

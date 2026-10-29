@@ -89,6 +89,8 @@ public final class TreeGl {
         this.species = species;
         nv = species.variantCount();
         slots = new Slot[nv][TreeLod.LEVELS];
+        barkTex = new int[nv];
+        leafTex = new int[nv];
         heights = new float[nv];
         for (int v = 0; v < nv; v++) {
             for (int l = 0; l < TreeLod.LEVELS; l++) slots[v][l] = new Slot();
@@ -138,6 +140,43 @@ public final class TreeGl {
 
     public void init(GL4 gl) {
         program = program(gl, source("tree.vert"), source("tree.frag"));
+        for (int v = 0; v < nv; v++) {
+            TreeAsset a = species.load(v);
+            barkTex[v] = texture(gl, a.barkTexture, false);
+            leafTex[v] = texture(gl, a.leafTexture, true);
+        }
+    }
+
+    private final int[] barkTex, leafTex;
+    private final java.util.Map<String, Integer> texIds = new java.util.HashMap<>();
+
+    /** Textur aus der Art hochladen (sRGB, Mipmaps, wiederholt); 0, wenn keine. */
+    private int texture(GL4 gl, String name, boolean alpha) {
+        if (name == null || name.isEmpty()) return 0;
+        Integer known = texIds.get(name);
+        if (known != null) return known;
+        java.awt.image.BufferedImage img = species.texture(name);
+        int w = img.getWidth(), h = img.getHeight();
+        int[] px = img.getRGB(0, 0, w, h, null, 0, w);
+        java.nio.ByteBuffer buf = Buffers.newDirectByteBuffer(w * h * 4);
+        boolean hasAlpha = img.getColorModel().hasAlpha();
+        for (int p : px) {
+            buf.put((byte) (p >> 16)).put((byte) (p >> 8)).put((byte) p).put(hasAlpha ? (byte) (p >>> 24) : (byte) 255);
+        }
+        buf.flip();
+        int[] id = new int[1];
+        gl.glGenTextures(1, id, 0);
+        gl.glBindTexture(GL.GL_TEXTURE_2D, id[0]);
+        gl.glPixelStorei(GL.GL_UNPACK_ALIGNMENT, 4);
+        gl.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_SRGB8_ALPHA8, w, h, 0, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, buf);
+        gl.glGenerateMipmap(GL.GL_TEXTURE_2D);
+        gl.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR_MIPMAP_LINEAR);
+        gl.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR);
+        gl.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_REPEAT);
+        gl.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_REPEAT);
+        gl.glBindTexture(GL.GL_TEXTURE_2D, 0);
+        texIds.put(name, id[0]);
+        return id[0];
     }
 
     /** Stufe je Baum wählen, fertig gebackene Netze hochladen, Instanzen füllen. */
@@ -247,6 +286,7 @@ public final class TreeGl {
         attrib(gl, 1, 3, stride, 3);
         attrib(gl, 2, 4, stride, TreeMesh.LIMB);
         attrib(gl, 3, 3, stride, TreeMesh.PHASE_TWIG);
+        attrib(gl, 6, 2, stride, TreeMesh.U);
         int ni = m.triangles * 3;
         gl.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, s.ibo);
         gl.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, (long) ni * 4, null, GL.GL_STATIC_DRAW);
@@ -295,6 +335,9 @@ public final class TreeGl {
         float[] bark = species.bark != null ? species.bark : species.load(0).barkColor;
         gl.glUniform3fv(loc(gl, "uBark"), 1, bark, 0);
         gl.glUniform1f(loc(gl, "uSnow"), look.snow);
+        gl.glUniform3fv(loc(gl, "uLeafRef"), 1, look.reference, 0);
+        gl.glUniform1i(loc(gl, "uBarkTex"), 0);
+        gl.glUniform1i(loc(gl, "uLeafTex"), 1);
         double[] sd = light.sunDir;
         double sl = Math.sqrt(sd[0] * sd[0] + sd[1] * sd[1] + sd[2] * sd[2]);
         gl.glUniform3f(loc(gl, "uSunDir"), (float) (sd[0] / sl), (float) (sd[1] / sl), (float) (sd[2] / sl));
@@ -309,6 +352,14 @@ public final class TreeGl {
         for (Slot[] row : slots)
             for (Slot s : row) {
                 if (!s.uploaded || s.count == 0) continue;
+                int v = variantOf(s);
+                boolean tb = s.mesh.barkTextured && barkTex[v] != 0, tl = s.mesh.leafTextured && leafTex[v] != 0;
+                gl.glUniform2i(loc(gl, "uTextured"), tb ? 1 : 0, tl ? 1 : 0);
+                gl.glActiveTexture(GL.GL_TEXTURE0);
+                gl.glBindTexture(GL.GL_TEXTURE_2D, tb ? barkTex[v] : 0);
+                gl.glActiveTexture(GL.GL_TEXTURE1);
+                gl.glBindTexture(GL.GL_TEXTURE_2D, tl ? leafTex[v] : 0);
+                gl.glActiveTexture(GL.GL_TEXTURE0);
                 gl.glBindVertexArray(s.vao);
                 gl.glDrawElementsInstanced(GL.GL_TRIANGLES, s.mesh.triangles * 3, GL.GL_UNSIGNED_INT, 0L, s.count);
                 tris += (long) s.mesh.triangles * s.count;
@@ -318,7 +369,14 @@ public final class TreeGl {
         drawnTriangles = tris;
     }
 
+    private int variantOf(Slot s) {
+        for (int v = 0; v < nv; v++) for (Slot x : slots[v]) if (x == s) return v;
+        return 0;
+    }
+
     public void dispose(GL4 gl) {
+        for (int id : texIds.values()) gl.glDeleteTextures(1, new int[]{id}, 0);
+        texIds.clear();
         for (Slot[] row : slots)
             for (Slot s : row) {
                 if (!s.uploaded) continue;

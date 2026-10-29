@@ -16,6 +16,8 @@ public final class TreeLod {
     public float chainAngle = 12, chainLength = 2;
     /** Röhren nur bis zu dieser Ordnung (0 Stamm, 1 Hauptäste, …) */
     public int trunkMaxOrder = 99;
+    /** Bäume ohne Skelett (FBX): Stamm in Rasterzellen der Größe Höhe/clusterCells vereinfachen */
+    public int clusterCells = 0;
 
     /** Holz der Zweige als Röhren */
     public boolean twigWood;
@@ -49,6 +51,7 @@ public final class TreeLod {
                 l.twigMinRadius = 0.003f;
                 l.twigChainAngle = 30;
                 l.chainAngle = 15;
+                l.clusterCells = 160;
                 l.leafKeep = 0.35f;
                 l.leafShape = 4;
             }
@@ -57,6 +60,7 @@ public final class TreeLod {
                 l.trunkMinRadius = 0.02f;
                 l.chainAngle = 25;
                 l.chainLength = 4;
+                l.clusterCells = 60;
                 l.leafKeep = 0.1f;
                 l.leafShape = 4;
             }
@@ -67,6 +71,7 @@ public final class TreeLod {
                 l.chainAngle = 40;
                 l.chainLength = 8;
                 l.trunkMaxOrder = 1;
+                l.clusterCells = 24;
                 l.leafKeep = 0;
                 l.silhouette = true;
             }

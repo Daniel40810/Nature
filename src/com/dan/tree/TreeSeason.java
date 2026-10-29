@@ -28,6 +28,8 @@ public final class TreeSeason {
         public final float[] colorLo = new float[3], colorHi = new float[3];
         public int day;
         public float snow;
+        /** Sommergrün: Bezug für Laubtexturen (Tönung = Farbe / Bezug) */
+        public final float[] reference = new float[3];
 
         public boolean visible(float rand) { return rand >= lo && rand < hi; }
 
@@ -43,6 +45,7 @@ public final class TreeSeason {
         Look l = new Look();
         l.day = day;
         l.snow = Math.max(0, Math.min(1, snow));
+        set(l.reference, summer);
         if (evergreen) {
             l.lo = 0;
             l.hi = 1;

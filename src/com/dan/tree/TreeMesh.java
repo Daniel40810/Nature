@@ -8,7 +8,7 @@ package com.dan.tree;
 public final class TreeMesh {
 
     /** Werte je Punkt */
-    public static final int STRIDE = 13;
+    public static final int STRIDE = 15;
     public static final int POS = 0, NRM = 3;
     /** Weg im Hauptast² / Reichweite (m): wie stark der Punkt mit dem Hauptast schwingt */
     public static final int LIMB = 6;
@@ -18,10 +18,12 @@ public final class TreeMesh {
     public static final int FLUTTER = 8;
     /** Phase des Hauptasts und des Zweigs, 0..1 */
     public static final int PHASE_LIMB = 9, PHASE_TWIG = 10;
-    /** 0 Holz, 1 Laub; Zufall je Blatt 0..1 in {@link #RAND} geht über die Jahreszeit ({@link TreeSeason.Look}) */
+    /** 0 Holz, 1 Laub, 2 Kronenhülle (Laub ohne Textur); Zufall je Blatt 0..1 in {@link #RAND} geht über die Jahreszeit ({@link TreeSeason.Look}) */
     public static final int KIND = 11;
     /** Zufall je Blatt (Holz: Schattierung), Ganzzahl-Teil: Verdeckung in Hundertsteln (siehe {@link #ao}) */
     public static final int RAND = 12;
+    /** Texturkoordinaten (Bildzeilen von oben); 0, wenn die Art keine Textur hat */
+    public static final int U = 13, V = 14;
 
     public final float[] v;
     public final int[] tri;
@@ -31,6 +33,8 @@ public final class TreeMesh {
     public final int leaves;
     public final float height, radius;
     public final TreeLod lod;
+    /** Rinde bzw. Laub tragen eine Textur ({@link TreeAsset#barkTexture}, {@link TreeAsset#leafTexture}) */
+    public boolean barkTextured, leafTextured;
 
     TreeMesh(float[] v, int vertices, int[] tri, int triangles, int barkTriangles, int leaves,
              float height, float radius, TreeLod lod) {
@@ -60,9 +64,16 @@ public final class TreeMesh {
         return v[i * STRIDE + KIND] > 0.5f;
     }
 
+    /** Punkt trägt eine Textur: Holz bei {@link #barkTextured}, Laub (nicht die Hülle, Art 2) bei {@link #leafTextured}. */
+    public boolean textured(int i) {
+        float k = v[i * STRIDE + KIND];
+        return k < 0.5f ? barkTextured : k < 1.5f && leafTextured;
+    }
+
     /**
      * Farbe des Punkts i, linear, für Art und Jahreszeit; false, wenn das Blatt nicht da ist.
-     * Der Shader in {@code gl/tree.vert} rechnet dasselbe.
+     * Bei Textur ist es die Tönung, mit der die Textur malgenommen wird: Rinde hell, Laub die Farbe der
+     * Jahreszeit geteilt durch das Sommergrün. Der Shader in {@code gl/tree.vert} rechnet dasselbe.
      */
     public boolean color(int i, TreeSpecies sp, TreeAsset a, TreeSeason.Look look, float[] out) {
         int b = i * STRIDE;
@@ -72,9 +83,13 @@ public final class TreeMesh {
             if (!look.visible(rand)) return false;
             look.color(rand, out);
             float jitter = 0.85f + 0.3f * fract(rand * 7.31f);
+            if (leafTextured && textured(i)) {
+                float[] ref = look.reference;
+                for (int k = 0; k < 3; k++) out[k] = Math.min(3, out[k] / Math.max(ref[k], 1e-3f));
+            }
             for (int k = 0; k < 3; k++) out[k] *= jitter * ao;
         } else {
-            float[] bark = sp != null && sp.bark != null ? sp.bark : a.barkColor;
+            float[] bark = barkTextured ? WHITE : sp != null && sp.bark != null ? sp.bark : a.barkColor;
             float jitter = 0.85f + 0.3f * rand;
             for (int k = 0; k < 3; k++) out[k] = bark[k] * jitter * (0.55f + 0.45f * ao);
         }
@@ -84,6 +99,8 @@ public final class TreeMesh {
         }
         return true;
     }
+
+    private static final float[] WHITE = {1, 1, 1};
 
     static float fract(float x) {
         return x - (float) Math.floor(x);

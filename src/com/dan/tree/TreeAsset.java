@@ -8,15 +8,17 @@ import java.io.UncheckedIOException;
 import java.util.zip.GZIPInputStream;
 
 /**
- * Ein Baum aus Unreal, wie ihn {@code tools/tree/usd2dtree.py} als {@code .dtree} schreibt.
+ * Ein Baum, wie ihn {@code tools/tree/usd2dtree.py} (Unreal PVE: Skelett, Zweige) oder
+ * {@code tools/tree/fbx2dtree.py} (FBX: Stamm und Laubkarten mit Textur, ohne Skelett) als {@code .dtree} schreibt.
  * Reine Daten: Skelett, Stamm und Äste als Netz, Zweig-Prototypen (Holz als Knotengraph,
- * Blätter als Sechseck) und Zweig-Instanzen. Alle Längen in Metern, y oben, Fuß bei (0, 0, 0).
+ * Blätter als Sechseck), Zweig-Instanzen, Laubkarten und Namen der Texturen.
+ * Alle Längen in Metern, y oben, Fuß bei (0, 0, 0).
  * Alle Felder sind öffentlich; {@link TreeBaker} macht daraus Netze in Stufen.
  */
 public final class TreeAsset {
 
     public static final int MAGIC = 0x44545245; // 'DTRE'
-    public static final int VERSION = 1;
+    public static final int VERSION = 2;
 
     public String name;
     /** Name der USD-Datei, aus der der Baum stammt. */
@@ -37,6 +39,12 @@ public final class TreeAsset {
 
     /** Stamm und Äste im Original. */
     public Mesh trunk;
+    /** UVs des Stamms (2 je Punkt, Bildzeilen von oben) oder null */
+    public float[] trunkUv;
+    /** Laubkarten mit Alpha-Textur (FBX-Bäume) oder null */
+    public Cards cards;
+    /** Texturen neben der .dtree-Datei (leer: keine) */
+    public String barkTexture = "", leafTexture = "";
 
     public Twig[] twigs;
 
@@ -56,6 +64,15 @@ public final class TreeAsset {
         public float[] pos, nrm;
         public short[] joint;
         public float[] weight;
+        public int[] tri;
+
+        public int vertices() { return pos.length / 3; }
+        public int triangles() { return tri.length / 3; }
+    }
+
+    /** Laubkarten: Dreiecke mit UVs in die Laubtextur, Normalen je Punkt. */
+    public static final class Cards {
+        public float[] pos, nrm, uv;
         public int[] tri;
 
         public int vertices() { return pos.length / 3; }
@@ -82,12 +99,15 @@ public final class TreeAsset {
     }
 
     public int instances() { return instProto.length; }
+    /** false für FBX-Bäume: nur ein Gelenk am Fuß, der Wind kommt aus der Geometrie */
+    public boolean hasSkeleton() { return jointParent.length > 1; }
     public int joints() { return jointParent.length; }
 
     /** Höhe des höchsten Punkts (Stamm, Zweige, Blätter). */
     public float height() {
         float h = 0;
         for (int i = 1; i < trunk.pos.length; i += 3) h = Math.max(h, trunk.pos[i]);
+        if (cards != null) for (int i = 1; i < cards.pos.length; i += 3) h = Math.max(h, cards.pos[i]);
         float[] p = new float[3];
         for (int k = 0; k < instances(); k++) {
             Twig t = twigs[instProto[k]];
@@ -142,7 +162,7 @@ public final class TreeAsset {
         DataInputStream in = new DataInputStream(new BufferedInputStream(new GZIPInputStream(raw, 1 << 16), 1 << 16));
         if (in.readInt() != MAGIC) throw new IOException("keine .dtree-Datei");
         int version = in.readInt();
-        if (version != VERSION) throw new IOException("Version " + version + " wird nicht unterstützt");
+        if (version < 1 || version > VERSION) throw new IOException("Version " + version + " wird nicht unterstützt");
         TreeAsset a = new TreeAsset();
         a.name = in.readUTF();
         a.source = in.readUTF();
@@ -194,6 +214,21 @@ public final class TreeAsset {
             a.instJoint[k * 2 + 1] = in.readShort();
             a.instWeight[k * 2] = in.readUnsignedByte() / 255f;
             a.instWeight[k * 2 + 1] = in.readUnsignedByte() / 255f;
+        }
+        if (version >= 2) {
+            if (in.readInt() != 0) a.trunkUv = floats(in, a.trunk.vertices() * 2);
+            int nc = in.readInt();
+            if (nc > 0) {
+                Cards c = new Cards();
+                c.pos = floats(in, nc * 3);
+                c.nrm = new float[nc * 3];
+                for (int i = 0; i < nc * 3; i++) c.nrm[i] = in.readByte() / 127f;
+                c.uv = floats(in, nc * 2);
+                c.tri = ints(in, in.readInt() * 3);
+                a.cards = c;
+            }
+            a.barkTexture = in.readUTF();
+            a.leafTexture = in.readUTF();
         }
         return a;
     }

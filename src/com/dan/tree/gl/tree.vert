@@ -3,7 +3,8 @@
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNrm;
 layout(location = 2) in vec4 aWind;     // Hauptast-Ausschlag, Zweig-Ausschlag, Zittern, Phase Hauptast
-layout(location = 3) in vec3 aLook;     // Phase Zweig, Art (0 Holz, 1 Laub), Verdeckung·100 + Zufall
+layout(location = 3) in vec3 aLook;     // Phase Zweig, Art (0 Holz, 1 Laub, 2 Hülle), Verdeckung·100 + Zufall
+layout(location = 6) in vec2 aUv;       // Texturkoordinaten (Bildzeilen von oben)
 layout(location = 4) in vec4 iA;        // x, y, z, Drehung (rad)
 layout(location = 5) in vec4 iB;        // Maßstab, Höhe des Netzes (m), Phase des Baums, Dämpfung der Böen
 uniform mat4 uVP;
@@ -13,11 +14,15 @@ uniform vec3 uFlex;                     // Stamm, Äste, Zittern
 uniform vec2 uVisible;                  // sichtbar: lo <= Zufall < hi
 uniform vec3 uLeafLo, uLeafHi, uBark;   // linear
 uniform float uSnow;
+uniform vec3 uLeafRef;                  // Sommergrün: Laubtexturen werden mit Farbe / Bezug getönt
+uniform ivec2 uTextured;                // Rinde, Laub mit Textur
 out vec3 vWorld;
 out vec3 vNormal;
 out vec3 vColor;
 out float vLeaf;
 out float vAo;
+out vec2 vUv;
+out float vTex;                         // 0 keine, 1 Rinde, 2 Laub
 
 const float TAU = 6.2832;
 
@@ -28,6 +33,7 @@ void main() {
     if (kind > 0.5 && (rand < uVisible.x || rand >= uVisible.y)) {
         gl_Position = vec4(2.0, 2.0, 2.0, 1.0);            // ganzes Blatt fällt weg (alle Ecken gleich)
         vWorld = vec3(0.0); vNormal = vec3(0.0, 1.0, 0.0); vColor = vec3(0.0); vLeaf = 0.0; vAo = 0.0;
+        vUv = vec2(0.0); vTex = 0.0;
         return;
     }
     float c = cos(iA.w), s = sin(iA.w);
@@ -78,11 +84,15 @@ void main() {
     vNormal = vec3(c * aNrm.x - s * aNrm.z, aNrm.y, s * aNrm.x + c * aNrm.z);
     vLeaf = kind;
     vAo = ao;
+    vUv = aUv;
+    vTex = kind > 0.5 ? (kind < 1.5 && uTextured.y == 1 ? 2.0 : 0.0) : (uTextured.x == 1 ? 1.0 : 0.0);
     vec3 col;
     if (kind > 0.5) {
-        col = mix(uLeafLo, uLeafHi, rand) * (0.85 + 0.3 * fract(rand * 7.31)) * ao;
+        col = mix(uLeafLo, uLeafHi, rand);
+        if (vTex > 1.5) col = min(col / max(uLeafRef, vec3(1e-3)), vec3(3.0));
+        col *= (0.85 + 0.3 * fract(rand * 7.31)) * ao;
     } else {
-        col = uBark * (0.85 + 0.3 * rand) * (0.55 + 0.45 * ao);
+        col = (vTex > 0.5 ? vec3(1.0) : uBark) * (0.85 + 0.3 * rand) * (0.55 + 0.45 * ao);
     }
     float snow = uSnow * smoothstep(0.25, 0.8, aNrm.y) * (kind > 0.5 ? 0.6 : 1.0);
     vColor = mix(col, vec3(0.85), snow);
