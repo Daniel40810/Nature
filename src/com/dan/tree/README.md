@@ -94,7 +94,7 @@ gl.draw(gl4, view, light, t);
 | `gl/TreeGl`, `gl/tree.vert`, `gl/tree.frag` | Bestand mit JOGL: Netze im Hintergrund backen, Eimer je Variante und Stufe, ein Aufruf je Eimer |
 | `demo/SoftRenderer` | Renderer auf dem Prozessor für Vorschau und Bilder |
 | `demo/TreeDemo` | Vorschau einer Art: Einzelbaum, Hain, Stufen nebeneinander; `--bild` ohne Fenster |
-| `demo/TreeGlDemo` | Bestand mit JOGL in einem `GLCanvas` (ein `GLJPanel` bleibt im `FFrame` schwarz); `--bild` ohne Fenster |
+| `demo/TreeGlDemo` | Bestand mit JOGL; zeichnet in einen Framebuffer außerhalb des Fensters und zeigt jedes Bild in einem `JPanel`, weil das durchscheinende `FFrame` unter Windows weder `GLCanvas` noch `GLJPanel` verträgt; `--bild` ohne Fenster |
 | `demo/TreeCheck` | Selbsttest einer Art |
 
 ## Neue Art hinzufügen

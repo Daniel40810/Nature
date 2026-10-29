@@ -15,8 +15,6 @@ import com.jogamp.opengl.GLDrawableFactory;
 import com.jogamp.opengl.GLEventListener;
 import com.jogamp.opengl.GLOffscreenAutoDrawable;
 import com.jogamp.opengl.GLProfile;
-import com.jogamp.opengl.awt.GLCanvas;
-import com.jogamp.opengl.util.FPSAnimator;
 
 import javax.imageio.ImageIO;
 import javax.swing.*;
@@ -26,7 +24,8 @@ import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
 import java.awt.image.BufferedImage;
 import java.io.File;
-import java.nio.ByteBuffer;
+import java.awt.image.DataBufferInt;
+import java.nio.IntBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
@@ -106,11 +105,7 @@ public final class TreeGlDemo implements GLEventListener {
         d.running = false;
         d.time = 3.5;
         GLProfile prof = GLProfile.get(GLProfile.GL4);
-        GLCapabilities caps = new GLCapabilities(prof);
-        caps.setOnscreen(false);
-        caps.setFBO(true);
-        caps.setDepthBits(24);
-        GLOffscreenAutoDrawable drawable = GLDrawableFactory.getFactory(prof).createOffscreenAutoDrawable(null, caps, null, w, h);
+        GLOffscreenAutoDrawable drawable = GLDrawableFactory.getFactory(prof).createOffscreenAutoDrawable(null, offscreenCaps(prof), null, w, h);
         drawable.addGLEventListener(d);
         long t0 = System.nanoTime();
         drawable.display();
@@ -119,42 +114,44 @@ public final class TreeGlDemo implements GLEventListener {
             drawable.display();
         }
         drawable.display();
-        BufferedImage[] img = new BufferedImage[1];
         drawable.invoke(true, g -> {
-            img[0] = grab(g.getGL().getGL4(), w, h);
+            d.grabFrame(g.getGL().getGL4(), w, h);
             return true;
         });
-        ImageIO.write(img[0], "png", new File(file));
+        ImageIO.write(d.shown, "png", new File(file));
         System.out.printf("%s geschrieben: %d Bäume, %,d Dreiecke, %s%n", file, d.trees.trees().size(), d.trees.triangles(),
                 d.error == null ? "ohne Fehler" : "Fehler: " + d.error);
         drawable.destroy();
         System.exit(d.error == null ? 0 : 1);
     }
 
-    static BufferedImage grab(GL4 gl, int w, int h) {
-        ByteBuffer buf = Buffers.newDirectByteBuffer(w * h * 4);
-        gl.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1);
-        gl.glReadPixels(0, 0, w, h, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, buf);
-        BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
-        for (int y = 0; y < h; y++)
-            for (int x = 0; x < w; x++) {
-                int i = ((h - 1 - y) * w + x) * 4;
-                img.setRGB(x, y, (buf.get(i) & 255) << 16 | (buf.get(i + 1) & 255) << 8 | (buf.get(i + 2) & 255));
-            }
-        return img;
-    }
+    /*
+     * Das FFrame ist ein durchscheinendes Fenster (runde Ecken). Darin findet JOGL unter Windows für einen GLCanvas
+     * keine Pixel-Konfiguration, und ein GLJPanel bleibt schwarz. Darum zeichnet OpenGL in einen eigenen
+     * Framebuffer außerhalb des Fensters; jedes Bild wird zurückgelesen und in einem gewöhnlichen JPanel gezeigt.
+     */
+    JPanel view;
+    volatile BufferedImage shown;
+    private final BufferedImage[] images = new BufferedImage[2];
+    private int imageIndex;
+    private IntBuffer pixels;
+    boolean live;
 
     void open() {
         FFrame f = new FFrame(sp.name + " – Grafikteil von com.dan.tree (JOGL)");
         JPanel root = f.getComponentPane();
         root.setLayout(new BorderLayout());
         root.setBackground(TreeDemo.BG);
-        // wie ForestGlDemo: GLCanvas ohne Multisampling (GLJPanel blieb mit Core-Profil und MSAA schwarz)
-        GLCapabilities caps = new GLCapabilities(GLProfile.get(GLProfile.GL4));
-        caps.setDepthBits(24);
-        GLCanvas canvas = new GLCanvas(caps);
-        canvas.setPreferredSize(new Dimension(1100, 800));
-        canvas.addGLEventListener(this);
+        view = new JPanel() {
+            @Override
+            protected void paintComponent(Graphics g) {
+                super.paintComponent(g);
+                BufferedImage img = shown;
+                if (img != null) g.drawImage(img, 0, 0, getWidth(), getHeight(), null);
+            }
+        };
+        view.setBackground(TreeDemo.BG);
+        view.setPreferredSize(new Dimension(1100, 800));
         MouseAdapter mouse = new MouseAdapter() {
             Point lastP;
 
@@ -170,10 +167,10 @@ public final class TreeGlDemo implements GLEventListener {
                 dist = Math.max(4, Math.min(1500, dist * Math.pow(1.12, e.getWheelRotation())));
             }
         };
-        canvas.addMouseListener(mouse);
-        canvas.addMouseMotionListener(mouse);
-        canvas.addMouseWheelListener(mouse);
-        root.add(canvas, BorderLayout.CENTER);
+        view.addMouseListener(mouse);
+        view.addMouseMotionListener(mouse);
+        view.addMouseWheelListener(mouse);
+        root.add(view, BorderLayout.CENTER);
         root.add(controls(), BorderLayout.EAST);
         info = new JLabel(" ");
         info.setForeground(TreeDemo.MUTED);
@@ -183,7 +180,68 @@ public final class TreeGlDemo implements GLEventListener {
         f.setSize(1440, 880);
         f.setLocationRelativeTo(null);
         f.setVisible(true);
-        new FPSAnimator(canvas, 60).start();
+        live = true;
+        Thread t = new Thread(this::renderLoop, "Baum-GL");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** Eigener Faden: Framebuffer an die Größe des Panels anpassen, zeichnen, Bild zeigen; etwa 60 Bilder je Sekunde. */
+    void renderLoop() {
+        GLOffscreenAutoDrawable drawable;
+        try {
+            GLProfile prof = GLProfile.get(GLProfile.GL4);
+            drawable = GLDrawableFactory.getFactory(prof).createOffscreenAutoDrawable(null, offscreenCaps(prof), null,
+                    Math.max(64, view.getWidth()), Math.max(64, view.getHeight()));
+            drawable.addGLEventListener(this);
+        } catch (Throwable e) {
+            fail(e);
+            return;
+        }
+        while (true) {
+            long t0 = System.nanoTime();
+            int w = Math.max(64, view.getWidth()), h = Math.max(64, view.getHeight());
+            try {
+                if (w != drawable.getSurfaceWidth() || h != drawable.getSurfaceHeight()) drawable.setSurfaceSize(w, h);
+                drawable.display();
+            } catch (Throwable e) {
+                fail(e);
+            }
+            SwingUtilities.invokeLater(view::repaint);
+            long sleep = 16 - (System.nanoTime() - t0) / 1_000_000;
+            try {
+                Thread.sleep(Math.max(1, sleep));
+            } catch (InterruptedException e) {
+                return;
+            }
+        }
+    }
+
+    static GLCapabilities offscreenCaps(GLProfile prof) {
+        GLCapabilities caps = new GLCapabilities(prof);
+        caps.setOnscreen(false);
+        caps.setFBO(true);
+        caps.setDepthBits(24);
+        return caps;
+    }
+
+    /** Bild aus dem Framebuffer holen (im GL-Faden, nach dem Zeichnen); zwei Bilder im Wechsel. */
+    void grabFrame(GL4 gl, int w, int h) {
+        imageIndex ^= 1;
+        BufferedImage img = images[imageIndex];
+        if (img == null || img.getWidth() != w || img.getHeight() != h) {
+            img = images[imageIndex] = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+        }
+        if (pixels == null || pixels.capacity() < w * h) pixels = Buffers.newDirectIntBuffer(w * h);
+        pixels.clear();
+        gl.glPixelStorei(GL.GL_PACK_ALIGNMENT, 4);
+        gl.glReadPixels(0, 0, w, h, GL.GL_BGRA, GL4.GL_UNSIGNED_INT_8_8_8_8_REV, pixels);
+        int[] dst = ((DataBufferInt) img.getRaster().getDataBuffer()).getData();
+        for (int y = 0; y < h; y++) {
+            pixels.position((h - 1 - y) * w);
+            pixels.get(dst, y * w, w);
+        }
+        shown = img;
     }
 
     JComponent controls() {
@@ -303,7 +361,9 @@ public final class TreeGlDemo implements GLEventListener {
         try {
             width = d.getSurfaceWidth();
             height = d.getSurfaceHeight();
-            frame(d.getGL().getGL4());
+            GL4 gl = d.getGL().getGL4();
+            frame(gl);
+            if (live) grabFrame(gl, width, height);
         } catch (Throwable e) {
             fail(e);
         }
