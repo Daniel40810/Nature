@@ -11,16 +11,22 @@ import com.jogamp.opengl.GL;
 import com.jogamp.opengl.GL4;
 import com.jogamp.opengl.GLAutoDrawable;
 import com.jogamp.opengl.GLCapabilities;
+import com.jogamp.opengl.GLDrawableFactory;
 import com.jogamp.opengl.GLEventListener;
+import com.jogamp.opengl.GLOffscreenAutoDrawable;
 import com.jogamp.opengl.GLProfile;
-import com.jogamp.opengl.awt.GLJPanel;
+import com.jogamp.opengl.awt.GLCanvas;
 import com.jogamp.opengl.util.FPSAnimator;
 
+import javax.imageio.ImageIO;
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
+import java.awt.image.BufferedImage;
+import java.io.File;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
@@ -31,7 +37,8 @@ import java.util.Random;
  * {@code com.dan.tree.<art>.demo} rufen nur {@link #run(TreeSpecies, String[])} auf.
  *
  * <pre>
- * …GlDemo [bäume] [fläche m] [tag]
+ * Fenster:  …GlDemo [bäume] [fläche m] [tag]
+ * Bild:     …GlDemo --bild datei.png [bäume] [fläche m] [tag] [wind m/s] [breite] [höhe]
  * </pre>
  */
 public final class TreeGlDemo implements GLEventListener {
@@ -50,6 +57,8 @@ public final class TreeGlDemo implements GLEventListener {
     double frameMs;
     int width = 1, height = 1;
     JLabel info;
+    /** erster Fehler in init/display, wird im Fenster angezeigt */
+    volatile String error;
 
     int groundProg, groundVao;
 
@@ -73,7 +82,11 @@ public final class TreeGlDemo implements GLEventListener {
         wind.gustiness = 0.5f;
     }
 
-    public static void run(TreeSpecies sp, String[] args) {
+    public static void run(TreeSpecies sp, String[] args) throws Exception {
+        if (args.length > 0 && args[0].equals("--bild")) {
+            image(sp, args);
+            return;
+        }
         int count = args.length > 0 ? Integer.parseInt(args[0]) : 150;
         float area = args.length > 1 ? Float.parseFloat(args[1]) : 220;
         TreeGlDemo d = new TreeGlDemo(sp, count, area);
@@ -81,16 +94,66 @@ public final class TreeGlDemo implements GLEventListener {
         SwingUtilities.invokeLater(d::open);
     }
 
+    /** Ein Bild ohne Fenster (wie ForestGlDemo --bild); wartet, bis alle Stufen hochgeladen sind. */
+    static void image(TreeSpecies sp, String[] a) throws Exception {
+        String file = a.length > 1 ? a[1] : "bestand.png";
+        int count = a.length > 2 ? Integer.parseInt(a[2]) : 150;
+        float area = a.length > 3 ? Float.parseFloat(a[3]) : 220;
+        TreeGlDemo d = new TreeGlDemo(sp, count, area);
+        if (a.length > 4) d.day = Integer.parseInt(a[4]);
+        if (a.length > 5) d.wind.speed = Float.parseFloat(a[5]);
+        int w = a.length > 6 ? Integer.parseInt(a[6]) : 1280, h = a.length > 7 ? Integer.parseInt(a[7]) : 800;
+        d.running = false;
+        d.time = 3.5;
+        GLProfile prof = GLProfile.get(GLProfile.GL4);
+        GLCapabilities caps = new GLCapabilities(prof);
+        caps.setOnscreen(false);
+        caps.setFBO(true);
+        caps.setDepthBits(24);
+        GLOffscreenAutoDrawable drawable = GLDrawableFactory.getFactory(prof).createOffscreenAutoDrawable(null, caps, null, w, h);
+        drawable.addGLEventListener(d);
+        long t0 = System.nanoTime();
+        drawable.display();
+        while (!d.trees.ready() && d.error == null && System.nanoTime() - t0 < 120_000_000_000L) {
+            Thread.sleep(50);
+            drawable.display();
+        }
+        drawable.display();
+        BufferedImage[] img = new BufferedImage[1];
+        drawable.invoke(true, g -> {
+            img[0] = grab(g.getGL().getGL4(), w, h);
+            return true;
+        });
+        ImageIO.write(img[0], "png", new File(file));
+        System.out.printf("%s geschrieben: %d Bäume, %,d Dreiecke, %s%n", file, d.trees.trees().size(), d.trees.triangles(),
+                d.error == null ? "ohne Fehler" : "Fehler: " + d.error);
+        drawable.destroy();
+        System.exit(d.error == null ? 0 : 1);
+    }
+
+    static BufferedImage grab(GL4 gl, int w, int h) {
+        ByteBuffer buf = Buffers.newDirectByteBuffer(w * h * 4);
+        gl.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1);
+        gl.glReadPixels(0, 0, w, h, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, buf);
+        BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++) {
+                int i = ((h - 1 - y) * w + x) * 4;
+                img.setRGB(x, y, (buf.get(i) & 255) << 16 | (buf.get(i + 1) & 255) << 8 | (buf.get(i + 2) & 255));
+            }
+        return img;
+    }
+
     void open() {
         FFrame f = new FFrame(sp.name + " – Grafikteil von com.dan.tree (JOGL)");
         JPanel root = f.getComponentPane();
         root.setLayout(new BorderLayout());
         root.setBackground(TreeDemo.BG);
+        // wie ForestGlDemo: GLCanvas ohne Multisampling (GLJPanel blieb mit Core-Profil und MSAA schwarz)
         GLCapabilities caps = new GLCapabilities(GLProfile.get(GLProfile.GL4));
         caps.setDepthBits(24);
-        caps.setSampleBuffers(true);
-        caps.setNumSamples(4);
-        GLJPanel canvas = new GLJPanel(caps);
+        GLCanvas canvas = new GLCanvas(caps);
+        canvas.setPreferredSize(new Dimension(1100, 800));
         canvas.addGLEventListener(this);
         MouseAdapter mouse = new MouseAdapter() {
             Point lastP;
@@ -195,7 +258,28 @@ public final class TreeGlDemo implements GLEventListener {
 
     @Override
     public void init(GLAutoDrawable d) {
-        GL4 gl = d.getGL().getGL4();
+        try {
+            setup(d.getGL().getGL4());
+        } catch (Throwable e) {
+            fail(e);
+        }
+    }
+
+    void fail(Throwable e) {
+        if (error == null) {
+            error = e.toString();
+            e.printStackTrace();
+        }
+        if (info != null) {
+            String s = "Fehler: " + error + " (Einzelheiten in der Konsole)";
+            SwingUtilities.invokeLater(() -> {
+                info.setForeground(new Color(240, 120, 110));
+                info.setText(s);
+            });
+        }
+    }
+
+    void setup(GL4 gl) {
         trees.init(gl);
         groundProg = shaderProgram(gl, GROUND_VS, GROUND_FS);
         int[] ids = new int[1];
@@ -215,7 +299,17 @@ public final class TreeGlDemo implements GLEventListener {
 
     @Override
     public void display(GLAutoDrawable d) {
-        GL4 gl = d.getGL().getGL4();
+        if (error != null && groundProg == 0) return;            // init fehlgeschlagen
+        try {
+            width = d.getSurfaceWidth();
+            height = d.getSurfaceHeight();
+            frame(d.getGL().getGL4());
+        } catch (Throwable e) {
+            fail(e);
+        }
+    }
+
+    void frame(GL4 gl) {
         long now = System.nanoTime();
         double dt = (now - last) / 1e9;
         last = now;
@@ -253,6 +347,10 @@ public final class TreeGlDemo implements GLEventListener {
         view.eye = eye;
         trees.draw(gl, view, light, time);
 
+        if (trees.error() != null && error == null) fail(new IllegalStateException(trees.error()));
+        int glErr = gl.glGetError();
+        if (glErr != GL.GL_NO_ERROR && error == null) fail(new IllegalStateException(String.format("OpenGL-Fehler 0x%04X", glErr)));
+        if (info == null || error != null) return;
         String s = String.format("%d Bäume · %,d Dreiecke · %.1f ms je Bild%s", trees.trees().size(), trees.triangles(), frameMs,
                 trees.ready() ? "" : " · backe Stufen …");
         SwingUtilities.invokeLater(() -> info.setText(s));

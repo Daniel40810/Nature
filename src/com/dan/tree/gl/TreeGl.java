@@ -62,7 +62,7 @@ public final class TreeGl {
 
     public final TreeSpecies species;
     /** Grenzen der Stufen 0, 1, 2 in Baumhöhen; darüber Stufe 3 */
-    public float[] lodDistance = {1.4f, 3.5f, 9f};
+    public float[] lodDistance = {1.4f, 3.5f, 14f};
     /** ohne Stufe 0 (Original mit allen Blättern), etwa für große Bestände */
     public int minLevel = 0;
 
@@ -82,7 +82,7 @@ public final class TreeGl {
         int count;                       // Instanzen in diesem Bild
         float[] data = new float[64];
         FloatBuffer direct;
-        boolean uploaded;
+        boolean uploaded, failed;
     }
 
     public TreeGl(TreeSpecies species) {
@@ -132,7 +132,7 @@ public final class TreeGl {
 
     /** true, wenn alle Netze hochgeladen sind. */
     public boolean ready() {
-        for (Slot[] row : slots) for (Slot s : row) if (s.baking != null && !s.uploaded) return false;
+        for (Slot[] row : slots) for (Slot s : row) if (s.baking != null && !s.uploaded && !s.failed) return false;
         return true;
     }
 
@@ -143,7 +143,11 @@ public final class TreeGl {
     /** Stufe je Baum wählen, fertig gebackene Netze hochladen, Instanzen füllen. */
     public void update(GL4 gl, double[] eye) {
         this.gl = gl;
-        for (Slot[] row : slots) for (Slot s : row) s.count = 0;
+        for (Slot[] row : slots)
+            for (Slot s : row) {
+                s.count = 0;
+                if (s.baking != null && !s.uploaded && !s.failed && s.baking.isDone()) upload(gl, s);
+            }
         for (Tree t : trees) {
             float h = heights[t.variant] * t.scale;
             double d = Math.sqrt(sq(eye[0] - t.x) + sq(eye[1] - t.y - h * 0.5) + sq(eye[2] - t.z)) / Math.max(h, 1);
@@ -165,7 +169,7 @@ public final class TreeGl {
         }
         for (Slot[] row : slots)
             for (Slot s : row) {
-                if (s.mesh == null || s.count == 0) continue;
+                if (!s.uploaded || s.count == 0) continue;
                 if (s.direct == null || s.direct.capacity() < s.count * 8) s.direct = Buffers.newDirectFloatBuffer(s.data.length);
                 s.direct.clear();
                 s.direct.put(s.data, 0, s.count * 8).flip();
@@ -177,6 +181,13 @@ public final class TreeGl {
 
     private GL4 gl;
 
+    /** Letzter Fehler beim Backen oder Hochladen, sonst null. */
+    public String error() {
+        return error;
+    }
+
+    private volatile String error;
+
     /** Fertiges Netz der Stufe oder einer gröberen; startet das Backen, wenn nötig. */
     private Slot slot(int v, int lod) {
         for (int l = lod; l < TreeLod.LEVELS; l++) {
@@ -185,19 +196,31 @@ public final class TreeGl {
                 final int fl = l;
                 s.baking = CompletableFuture.supplyAsync(() -> species.bake(v, fl));
             }
-            if (!s.uploaded && s.baking.isDone() && gl != null) upload(gl, s, s.baking.join());
             if (s.uploaded) return s;
         }
         // noch nichts fertig: auf die gröbste Stufe warten (klein, schnell)
         Slot s = slots[v][TreeLod.LEVELS - 1];
-        if (gl != null) {
-            upload(gl, s, s.baking.join());
-            return s;
-        }
-        return null;
+        if (gl == null || s.failed) return null;
+        s.baking.join();
+        upload(gl, s);
+        return s.uploaded ? s : null;
     }
 
-    private void upload(GL4 gl, Slot s, TreeMesh m) {
+    /** Größe der Stücke beim Hochladen (Werte), damit kein riesiger Direct-Buffer nötig ist. */
+    private static final int CHUNK = 1 << 20;
+    private FloatBuffer chunkF;
+    private java.nio.IntBuffer chunkI;
+
+    private void upload(GL4 gl, Slot s) {
+        TreeMesh m;
+        try {
+            m = s.baking.join();
+        } catch (RuntimeException e) {
+            s.failed = true;
+            error = "Backen fehlgeschlagen: " + e.getCause();
+            e.printStackTrace();
+            return;
+        }
         int[] ids = new int[3];
         gl.glGenVertexArrays(1, ids, 0);
         s.vao = ids[0];
@@ -206,16 +229,33 @@ public final class TreeGl {
         s.ibo = ids[1];
         s.inst = ids[2];
         gl.glBindVertexArray(s.vao);
+        if (chunkF == null) {
+            chunkF = Buffers.newDirectFloatBuffer(CHUNK);
+            chunkI = Buffers.newDirectIntBuffer(CHUNK);
+        }
+        int nf = m.vertices * TreeMesh.STRIDE;
         gl.glBindBuffer(GL.GL_ARRAY_BUFFER, s.vbo);
-        gl.glBufferData(GL.GL_ARRAY_BUFFER, (long) m.vertices * TreeMesh.STRIDE * 4,
-                Buffers.newDirectFloatBuffer(m.v, 0, m.vertices * TreeMesh.STRIDE), GL.GL_STATIC_DRAW);
+        gl.glBufferData(GL.GL_ARRAY_BUFFER, (long) nf * 4, null, GL.GL_STATIC_DRAW);
+        for (int o = 0; o < nf; o += CHUNK) {
+            int n = Math.min(CHUNK, nf - o);
+            chunkF.clear();
+            chunkF.put(m.v, o, n).flip();
+            gl.glBufferSubData(GL.GL_ARRAY_BUFFER, (long) o * 4, (long) n * 4, chunkF);
+        }
         int stride = TreeMesh.STRIDE * 4;
         attrib(gl, 0, 3, stride, 0);
         attrib(gl, 1, 3, stride, 3);
         attrib(gl, 2, 4, stride, TreeMesh.LIMB);
         attrib(gl, 3, 3, stride, TreeMesh.PHASE_TWIG);
+        int ni = m.triangles * 3;
         gl.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, s.ibo);
-        gl.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, (long) m.triangles * 3 * 4, Buffers.newDirectIntBuffer(m.tri, 0, m.triangles * 3), GL.GL_STATIC_DRAW);
+        gl.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, (long) ni * 4, null, GL.GL_STATIC_DRAW);
+        for (int o = 0; o < ni; o += CHUNK) {
+            int n = Math.min(CHUNK, ni - o);
+            chunkI.clear();
+            chunkI.put(m.tri, o, n).flip();
+            gl.glBufferSubData(GL.GL_ELEMENT_ARRAY_BUFFER, (long) o * 4, (long) n * 4, chunkI);
+        }
         gl.glBindBuffer(GL.GL_ARRAY_BUFFER, s.inst);
         gl.glBufferData(GL.GL_ARRAY_BUFFER, 8 * 4, null, GL4.GL_STREAM_DRAW);
         attrib(gl, 4, 4, 32, 0);
@@ -224,6 +264,14 @@ public final class TreeGl {
         gl.glVertexAttribDivisor(5, 1);
         gl.glBindVertexArray(0);
         gl.glBindBuffer(GL.GL_ARRAY_BUFFER, 0);
+        int err = gl.glGetError();
+        if (err == GL.GL_OUT_OF_MEMORY) {
+            s.failed = true;
+            error = "Grafikspeicher voll beim Hochladen von " + m;
+            gl.glDeleteBuffers(3, new int[]{s.vbo, s.ibo, s.inst}, 0);
+            gl.glDeleteVertexArrays(1, new int[]{s.vao}, 0);
+            return;
+        }
         s.mesh = m;
         s.uploaded = true;
     }

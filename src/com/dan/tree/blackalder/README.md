@@ -21,6 +21,7 @@ TreeMesh m = erle.bake(2, 1);                 // C schlank, Stufe 1
 - `com.dan.tree.blackalder.demo.BlackAlderDemo [ansicht variante stufe tag]`: Vorschau auf dem Prozessor. Ansicht 0 Einzelbaum, 1 Hain aus 14 Erlen mit Stufen nach Entfernung, 2 alle Stufen nebeneinander. Regler für Wind, Böen, Richtung, Tag und Schnee.
   Ohne Fenster: `BlackAlderDemo --bild datei.png [einzel|hain|stufen] [variante] [stufe|auto] [tag] [wind m/s] [breite] [höhe] [zeit s]`.
 - `com.dan.tree.blackalder.demo.BlackAlderGlDemo [bäume] [fläche m] [tag]`: Bestand mit JOGL, voreingestellt 150 Erlen auf 220 m × 220 m.
+  Ohne Fenster: `BlackAlderGlDemo --bild datei.png [bäume] [fläche m] [tag] [wind m/s] [breite] [höhe]`.
 - `com.dan.tree.blackalder.demo.BlackAlderCheck`: prüft Format, Skelett, alle Stufen aller Varianten, Wind (Stille, Fuß fest, oben mehr, Richtung, Drehung, Sturm ohne Risse), Jahreszeit und Reproduzierbarkeit. Endet mit „Alles in Ordnung.“
 
 ## Neu umwandeln
