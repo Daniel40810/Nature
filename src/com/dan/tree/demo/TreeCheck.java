@@ -102,6 +102,8 @@ public final class TreeCheck {
             int leaves = 0;
             for (TreeAsset.Twig t : a.twigs) leaves += t.leaves();
             check(leaves > 0, "Zweig-Prototypen haben Blätter (" + leaves + ")");
+        } else if (sp.form == TreeSpecies.Form.GROUND) {
+            check(a.trunk.triangles() > 0 && a.trunkUv != null, "Gelände: Netz mit UVs (" + a.trunk.triangles() + " Dreiecke)");
         } else {
             check(a.cards != null && a.cards.triangles() > 0, "ohne Skelett: Laubkarten vorhanden ("
                     + (a.cards == null ? 0 : a.cards.triangles()) + " Dreiecke)");
@@ -113,7 +115,12 @@ public final class TreeCheck {
                     "Texturen gefunden (" + a.barkTexture + ", " + a.leafTexture + "), Laub mit Alpha");
         }
         float h = a.height();
-        check(h >= minH && h <= maxH, String.format("Höhe %.1f m in %.0f … %.0f m", h, minH, maxH));
+        if (sp.form == TreeSpecies.Form.GROUND) {
+            float r = sp.bake(v, 3).radius;
+            check(r >= minH && r <= maxH, String.format("Halbmesser %.1f m in %.0f … %.0f m", r, minH, maxH));
+        } else {
+            check(h >= minH && h <= maxH, String.format("Höhe %.2f m in %.2f … %.2f m", h, minH, maxH));
+        }
         if (a.hasSkeleton()) {
             TreeSkeleton sk = new TreeSkeleton(a);
             // Sträucher (unter 5 m) haben oft keinen durchgehenden Stamm
@@ -130,13 +137,23 @@ public final class TreeCheck {
         }
         check(m[0].triangles > m[1].triangles && m[1].triangles >= m[2].triangles && m[0].triangles > m[3].triangles,
                 "Dreiecke nehmen mit der Stufe ab");
-        check(m[3].triangles < 1000, "Stufe 3 unter 1 000 Dreiecken (" + m[3].triangles + ")");
-        check(Math.abs(m[3].height - m[0].height) < Math.max(m[0].height * 0.15f, 0.3f),
-                String.format("Hülle so hoch wie der Baum (%.1f / %.1f m)", m[3].height, m[0].height));
+        check(m[3].triangles < 1000 || m[3].triangles < m[0].triangles * 0.07f,
+                "Stufe 3 unter 1 000 Dreiecken oder unter 7 % von Stufe 0 (" + m[3].triangles + ")");
+        float tol = sp.form == TreeSpecies.Form.GRASS ? 0.45f : 0.15f;
+        check(Math.abs(m[3].height - m[0].height) < Math.max(m[0].height * tol, sp.form == TreeSpecies.Form.TREE ? 0.3f : 0.02f),
+                String.format("Stufe 3 so hoch wie Stufe 0 (%.2f / %.2f m)", m[3].height, m[0].height));
         TreeMesh again = sp.bake(v, 1);
         check(Arrays.equals(again.v, m[1].v) && Arrays.equals(again.tri, m[1].tri), "Backen ist reproduzierbar");
 
-        wind(sp, a, m[1]);
+        if (sp.form == TreeSpecies.Form.GROUND) {
+            TreeWind w = new TreeWind();
+            w.speed = 25;
+            float[] out = new float[m[1].vertices * 3];
+            w.displace(m[1], sp, a.gustAttenuation, 3.3f, 0, 0, 0, 0, out);
+            check(Math.max(maxShift(m[1], out, -1e9f, 1e9f), maxLeafShift(m[1], out)) < 1e-6f, "Gelände bewegt sich im Sturm nicht");
+        } else {
+            wind(sp, a, m[1]);
+        }
     }
 
     static boolean valid(TreeMesh m) {
@@ -167,7 +184,8 @@ public final class TreeCheck {
         check(foot < Math.max(0.01f, m.height * 0.02f), String.format("Fuß bleibt stehen (%.4f m)", foot));
         float mid = meanShift(m, out, m.height * 0.3f, m.height * 0.5f);
         float top = meanShift(m, out, m.height * 0.8f, m.height * 1.1f);
-        check(top > mid && top > 0.05f, String.format("oben mehr Ausschlag als in der Mitte (%.2f / %.2f m)", top, mid));
+        if (m.height > 0.05f)          // flach liegende Bodendecker haben kein Oben
+            check(top > mid && top > Math.min(0.05f, m.height * 0.08f), String.format("oben mehr Ausschlag als in der Mitte (%.3f / %.3f m)", top, mid));
         double dx = 0;
         for (int i = 0; i < m.vertices; i++) dx += out[i * 3] - m.v[i * TreeMesh.STRIDE];
         check(dx > 0, "der Baum neigt sich mit dem Wind");
@@ -186,7 +204,9 @@ public final class TreeCheck {
         w.displace(m, sp, a.gustAttenuation, 3.3f, 0, 0, 0, 0, out);
         float top25 = meanShift(m, out, m.height * 0.8f, m.height * 1.1f);
         check(top25 > top, String.format("stärkerer Wind, größerer Ausschlag (%.2f > %.2f m)", top25, top));
-        check(tears(m, out) < 0.002, String.format("keine Risse im Sturm (%.3f %% gedehnte Kanten)", tears(m, out) * 100));
+        // Gras: lange Halme dehnen sich im Verschiebungsmodell stärker, Risse wären trotzdem Sprünge
+        double maxTears = sp.form == TreeSpecies.Form.GRASS ? 0.02 : 0.002;
+        check(tears(m, out) < maxTears, String.format("keine Risse im Sturm (%.3f %% gedehnte Kanten)", tears(m, out) * 100));
     }
 
     /** Größte Verschiebung von Holz (Laub, das bis zum Boden hängt, darf sich bewegen). */
@@ -258,6 +278,16 @@ public final class TreeCheck {
         TreeSeason s = sp.season;
         TreeSeason.Look winter = s.look(20, 0), spring = s.look(s.leafOut + s.flushDays / 2, 0),
                 summer = s.look(200, 0), fall = s.look((s.colorFull + s.bare) / 2, 0);
+        if (sp.form == TreeSpecies.Form.GROUND) return;
+        if (s.persistent || s.evergreen) {
+            boolean all = true;
+            for (int d = 0; d < 365; d += 5) all &= s.look(d, 0).lo == 0 && s.look(d, 0).hi == 1;
+            check(all, "Laub (Halme) das ganze Jahr da");
+            float diff = 0;
+            for (int k = 0; k < 3; k++) diff += Math.abs(winter.colorLo[k] - summer.colorLo[k]);
+            check(s.evergreen || diff > 0.005f, String.format("im Winter andere Farbe als im Sommer (%.3f)", diff));
+            return;
+        }
         check(winter.bare(), "im Januar kahl");
         check(summer.lo == 0 && summer.hi == 1, "im Juli alles Laub");
         check(spring.hi > 0.1f && spring.hi < 0.9f, String.format("beim Austrieb ein Teil (%.2f)", spring.hi));

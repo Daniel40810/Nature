@@ -14,6 +14,10 @@ public final class TreeSeason {
     public int matureDays = 45;
     public int colorStart = 290, colorFull = 312, bare = 322;
     public boolean evergreen;
+    /** Laub bleibt das ganze Jahr, färbt sich aber (Gras): im Winter {@link #winter}, ab dem Austrieb wieder frisch */
+    public boolean persistent;
+    /** Farbe im Winter bei {@link #persistent} (null: letzte Herbstfarbe) */
+    public float[] winter;
 
     public float[] spring = {0.10f, 0.26f, 0.05f};
     public float[] summer = {0.03f, 0.095f, 0.025f};
@@ -51,6 +55,26 @@ public final class TreeSeason {
             l.hi = 1;
             set(l.colorLo, summer);
             set(l.colorHi, summer);
+            return l;
+        }
+        if (persistent) {
+            l.lo = 0;
+            l.hi = 1;
+            float[] base = new float[3], dry = winter != null ? winter : autumnAt(1);
+            // Winter (nach bare und vor leafOut) dürr; Austrieb vom Dürren zum Frühlingsgrün, dann wie sonst
+            float green = smooth(leafOut, leafOut + flushDays, day);
+            mix(dry, spring, green, base);
+            float mature = smooth(leafOut + flushDays, leafOut + flushDays + matureDays, day);
+            float[] tmp = new float[3];
+            mix(base, summer, mature, tmp);
+            float p = smooth(colorStart, colorFull, day), q = smooth(colorFull, bare, day);
+            float pLo = Math.min(1, p * 1.6f), pHi = Math.max(0, p * 1.6f - 0.6f);
+            float[] lo = new float[3], hi = new float[3];
+            mix(tmp, autumnAt(0), pLo, lo);
+            mix(tmp, autumnAt(1), pHi, hi);
+            mix(lo, dry, q, l.colorLo);
+            mix(hi, dry, q, l.colorHi);
+            if (day >= bare || day < leafOut) { set(l.colorLo, dry); set(l.colorHi, dry); }
             return l;
         }
         float flush = smooth(leafOut, leafOut + flushDays, day);

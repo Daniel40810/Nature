@@ -61,8 +61,10 @@ public final class TreeGl {
     public record Tree(int variant, float x, float y, float z, float yaw, float scale) {}
 
     public final TreeSpecies species;
-    /** Grenzen der Stufen 0, 1, 2 in Baumhöhen; darüber Stufe 3 */
-    public float[] lodDistance = {1.4f, 3.5f, 14f};
+    /** Grenzen der Stufen 0, 1, 2 in Baumhöhen; darüber Stufe 3 (Vorgabe aus {@link TreeSpecies#lodDistance}) */
+    public float[] lodDistance;
+    /** Ausdünnen ab, ganz weg ab (in Höhen; Vorgabe aus der Art, für Gras) */
+    public float fadeDistance, maxDistance;
     /** ohne Stufe 0 (Original mit allen Blättern), etwa für große Bestände */
     public int minLevel = 0;
 
@@ -87,6 +89,9 @@ public final class TreeGl {
 
     public TreeGl(TreeSpecies species) {
         this.species = species;
+        lodDistance = species.lodDistance.clone();
+        fadeDistance = species.fadeDistance;
+        maxDistance = species.maxDistance;
         nv = species.variantCount();
         slots = new Slot[nv][TreeLod.LEVELS];
         barkTex = new int[nv];
@@ -95,7 +100,8 @@ public final class TreeGl {
         for (int v = 0; v < nv; v++) {
             for (int l = 0; l < TreeLod.LEVELS; l++) slots[v][l] = new Slot();
             TreeAsset a = species.load(v);
-            heights[v] = a.height();
+            // Maß für die Stufen: Höhe, bei Gelände der halbe Durchmesser
+            heights[v] = species.form == TreeSpecies.Form.GROUND ? species.bake(v, TreeLod.LEVELS - 1).radius : a.height();
         }
         look = species.season.look(180, 0);
     }
@@ -155,7 +161,13 @@ public final class TreeGl {
         if (name == null || name.isEmpty()) return 0;
         Integer known = texIds.get(name);
         if (known != null) return known;
-        java.awt.image.BufferedImage img = species.texture(name);
+        int id = uploadTexture(gl, species.texture(name));
+        texIds.put(name, id);
+        return id;
+    }
+
+    /** Bild als sRGB-Textur mit Mipmaps hochladen, wiederholt; liefert die Kennung. */
+    public static int uploadTexture(GL4 gl, java.awt.image.BufferedImage img) {
         int w = img.getWidth(), h = img.getHeight();
         int[] px = img.getRGB(0, 0, w, h, null, 0, w);
         java.nio.ByteBuffer buf = Buffers.newDirectByteBuffer(w * h * 4);
@@ -175,7 +187,6 @@ public final class TreeGl {
         gl.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_REPEAT);
         gl.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_REPEAT);
         gl.glBindTexture(GL.GL_TEXTURE_2D, 0);
-        texIds.put(name, id[0]);
         return id[0];
     }
 
@@ -187,9 +198,16 @@ public final class TreeGl {
                 s.count = 0;
                 if (s.baking != null && !s.uploaded && !s.failed && s.baking.isDone()) upload(gl, s);
             }
+        int index = -1;
         for (Tree t : trees) {
+            index++;
             float h = heights[t.variant] * t.scale;
-            double d = Math.sqrt(sq(eye[0] - t.x) + sq(eye[1] - t.y - h * 0.5) + sq(eye[2] - t.z)) / Math.max(h, 1);
+            double d = Math.sqrt(sq(eye[0] - t.x) + sq(eye[1] - t.y - h * 0.5) + sq(eye[2] - t.z)) / Math.max(h, 0.05f);
+            if (d > maxDistance) continue;
+            if (d > fadeDistance) {
+                double f = (d - fadeDistance) / Math.max(maxDistance - fadeDistance, 1e-3);
+                if (com.dan.tree.TreeBaker.hash(index, 97) < f) continue;
+            }
             int lod = d < lodDistance[0] ? 0 : d < lodDistance[1] ? 1 : d < lodDistance[2] ? 2 : 3;
             lod = Math.max(lod, minLevel);
             Slot s = slot(t.variant, lod);

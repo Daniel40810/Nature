@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""FBX-Baum (Stamm + Laubkarten mit Alpha-Textur, ohne Skelett) -> .dtree für com.dan.tree.
+"""FBX-Baum oder Gras (Stamm + Laubkarten mit Alpha-Textur, ohne Skelett) -> .dtree für com.dan.tree / com.dan.grass.
 
 Liest binäres oder ASCII-FBX (fbxread.py), legt alle Meshes in den Baumraum (Meter, y oben), trennt
 nach Material: Name mit "leaf" -> Laubkarten, sonst Stamm. Texturen werden verkleinert neben die
@@ -9,6 +9,10 @@ Ein Skelett gibt es nicht; com.dan.tree leitet den Wind aus der Geometrie ab (ei
 Aufruf:
   pip install numpy pillow
   python3 fbx2dtree.py baum.fbx ziel.dtree --name "Name" --bark rinde.png --leaf laub.png --prefix art
+Gras (alles ist Laub, Deckkraft als eigenes Bild, z. B. Megascans):
+  python3 fbx2dtree.py gras_LOD0.fbx ziel.dtree --all-leaf --leaf BaseColor.jpg --opacity Opacity.jpg --prefix gras
+Mehrere Laubtexturen (je Material eine, gefunden nach Dateiname in einem Ordner) werden zu einem Atlas:
+  python3 fbx2dtree.py mix.fbx ziel.dtree --all-leaf --atlas texturen/ --prefix mix
 """
 import argparse
 import gzip
@@ -31,15 +35,39 @@ def srgb_to_linear(c):
     return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
 
 
-def write_textures(bark, leaf, outdir, prefix):
+def leaf_image(leaf, opacity):
+    """Laubbild als RGBA; die Deckkraft kommt aus dem Alpha des Bilds oder aus einem eigenen Graubild."""
+    im = leaf if isinstance(leaf, Image.Image) else Image.open(leaf)
+    im = im.convert('RGBA')
+    if opacity:
+        # Megascans legt die Deckkraft teils nur in einen Kanal (Rot): den hellsten Kanal nehmen, nicht die Helligkeit
+        op = np.asarray(Image.open(opacity).convert('RGB')).max(axis=2).astype(np.uint8)
+        im.putalpha(Image.fromarray(op, 'L').resize(im.size, Image.LANCZOS))
+    return im
+
+
+def atlas(images):
+    """Bilder in einem quadratischen Raster; liefert Atlas und je Bild (Spalte, Zeile, Anteil)."""
+    n = int(np.ceil(np.sqrt(len(images))))
+    cell = LEAF_SIZE // 2 if n > 1 else LEAF_SIZE
+    out = Image.new('RGBA', (cell * n, cell * n), (0, 0, 0, 0))
+    places = []
+    for i, im in enumerate(images):
+        c, r = i % n, i // n
+        out.paste(im.convert('RGBA').resize((cell, cell), Image.LANCZOS), (c * cell, r * cell))
+        places.append((c, r, 1.0 / n))
+    return out, places
+
+
+def write_textures(bark, leaf, outdir, prefix, leaf_size=LEAF_SIZE):
     """Verkleinern; im Laub die Farbe unter durchsichtige Stellen ziehen (keine Säume beim Filtern)."""
     names, means = [], []
-    for kind, src, size in (('bark', bark, BARK_SIZE), ('leaf', leaf, LEAF_SIZE)):
-        if not src:
+    for kind, src, size in (('bark', bark, BARK_SIZE), ('leaf', leaf, leaf_size)):
+        if src is None or (isinstance(src, str) and src == ''):
             names.append('')
             means.append(None)
             continue
-        im = Image.open(src).convert('RGBA')
+        im = (src if isinstance(src, Image.Image) else Image.open(src)).convert('RGBA')
         im = im.resize((min(size, im.width), min(size, im.height)), Image.LANCZOS)
         a = np.asarray(im).astype(np.float64) / 255
         if kind == 'leaf':
@@ -71,8 +99,24 @@ def write_textures(bark, leaf, outdir, prefix):
     return names, means
 
 
-def convert(src, dst, name, bark, leaf, prefix):
+def convert(src, dst, name, bark, leaf, prefix, all_leaf=False, opacity=None, atlas_dir=None):
     root = fbxread.read(src)
+    # Atlas: je Material die erste Textur, gesucht nach Dateinamen in atlas_dir
+    uv_place = {}
+    if atlas_dir:
+        found = {}
+        for m in fbxread.meshes(root):
+            for mname, tex in zip(m['materials'], m['textures']):
+                if mname in found or not tex:
+                    continue
+                base = tex[0].replace('\\', '/').split('/')[-1]
+                path = os.path.join(atlas_dir, base)
+                if os.path.exists(path):
+                    found[mname] = path
+        names = sorted(found)
+        img, places = atlas([Image.open(found[k]) for k in names])
+        uv_place = dict(zip(names, places))
+        leaf = img
     axes, unit = fbxread.axes(root)
     parts = {'trunk': ([], [], [], []), 'leaf': ([], [], [], [])}
     for m in fbxread.meshes(root):
@@ -90,13 +134,17 @@ def convert(src, dst, name, bark, leaf, prefix):
         for f, (a, b) in enumerate(zip(poly, ends)):
             mi = m['mat'][f] if f < len(m['mat']) else 0
             mname = m['materials'][mi] if mi < len(m['materials']) else ''
-            target = parts['leaf' if 'leaf' in mname.lower() else 'trunk']
+            target = parts['leaf' if all_leaf or 'leaf' in mname.lower() else 'trunk']
+            col, row, share = uv_place.get(mname, (0, 0, 1.0))
             for k in range(a + 1, b - 1):
                 target[3].append((len(target[0]) + 0, len(target[0]) + 1, len(target[0]) + 2))
                 for c in (a, k, k + 1):
                     target[0].append(pts[pv[c]])
                     target[1].append(nrm[c])
-                    target[2].append((uv[c][0], 1 - uv[c][1]))     # Bildzeilen von oben
+                    u, v = uv[c][0], 1 - uv[c][1]                  # Bildzeilen von oben
+                    if share < 1:
+                        u, v = (col + min(max(u, 0), 1)) * share, (row + min(max(v, 0), 1)) * share
+                    target[2].append((u, v))
 
     def weld(p, n, t, tris):
         """Gleiche Ecken (Lage, UV, Normale) zusammenlegen."""
@@ -114,17 +162,26 @@ def convert(src, dst, name, bark, leaf, prefix):
 
     trunk = weld(*parts['trunk'])
     foliage = weld(*parts['leaf'])
-    if trunk is None:
-        sys.exit('kein Stamm gefunden')
-    tp, tn, tuv, tt = trunk
-    # Fuß: Mitte der Stammpunkte im untersten halben Meter
-    y0 = tp[:, 1].min()
-    low = tp[tp[:, 1] < y0 + 0.5]
+    if trunk is None and foliage is None:
+        sys.exit('keine Geometrie gefunden')
+    if trunk is None:                        # Gras: kein Stamm
+        tp, tn, tuv, tt = np.zeros((0, 3)), np.zeros((0, 3)), np.zeros((0, 2)), np.zeros((0, 3), dtype=np.int64)
+        base = foliage[0]
+    else:
+        tp, tn, tuv, tt = trunk
+        base = tp
+    # Fuß: Mitte der Punkte im untersten Stück (Baum: halber Meter, Gras: 5 % der Höhe)
+    y0 = base[:, 1].min()
+    band = 0.5 if trunk is not None else max(0.02, 0.05 * (base[:, 1].max() - y0))
+    low = base[base[:, 1] < y0 + band]
     cx, cz = low[:, 0].mean(), low[:, 2].mean()
     radius = float(np.median(np.hypot(low[:, 0] - cx, low[:, 2] - cz))) if len(low) else 0.2
 
     outdir = os.path.dirname(os.path.abspath(dst))
-    (bark_name, leaf_name), (bark_mean, leaf_mean) = write_textures(bark, leaf, outdir, prefix)
+    if leaf is not None and not (isinstance(leaf, str) and leaf == ''):
+        leaf = leaf_image(leaf, opacity)
+    leaf_size = LEAF_SIZE
+    (bark_name, leaf_name), (bark_mean, leaf_mean) = write_textures(bark, leaf, outdir, prefix, leaf_size)
 
     o = Out()
     o.i(MAGIC)
@@ -147,7 +204,7 @@ def convert(src, dst, name, bark, leaf, prefix):
         fh.write(bytes(o.b))       # ohne Zeitstempel: gleiche Eingabe, gleiche Datei
     nf = 0 if foliage is None else len(foliage[3])
     print(f'{os.path.basename(dst)}: Stamm {len(tt)} Dreiecke, Laub {nf} Dreiecke, '
-          f'Höhe {max(tp[:, 1].max(), foliage[0][:, 1].max() if foliage else 0):.1f} m, '
+          f'Höhe {max(tp[:, 1].max() if len(tp) else 0, foliage[0][:, 1].max() if foliage else 0):.2f} m, '
           f'Texturen {bark_name or "-"} / {leaf_name or "-"}, {os.path.getsize(dst) / 1e6:.2f} MB')
 
 
@@ -159,9 +216,12 @@ def main():
     ap.add_argument('--bark', default=None, help='Rindentextur (PNG, TGA, …)')
     ap.add_argument('--leaf', default=None, help='Laubtextur mit Alpha')
     ap.add_argument('--prefix', default=None, help='Präfix der geschriebenen Texturen (Vorgabe: Name der Zieldatei)')
+    ap.add_argument('--all-leaf', action='store_true', help='alles ist Laub (Gras, kein Stamm)')
+    ap.add_argument('--opacity', default=None, help='Deckkraft als eigenes Graubild (Megascans: *_Opacity.jpg)')
+    ap.add_argument('--atlas', default=None, help='Ordner mit den Laubtexturen der Materialien; ergibt einen Atlas')
     a = ap.parse_args()
     base = os.path.splitext(os.path.basename(a.dst))[0]
-    convert(a.src, a.dst, a.name or base, a.bark, a.leaf, a.prefix or base)
+    convert(a.src, a.dst, a.name or base, a.bark, a.leaf, a.prefix or base, a.all_leaf, a.opacity, a.atlas)
 
 
 if __name__ == '__main__':
