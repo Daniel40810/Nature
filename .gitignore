@@ -1,0 +1,13 @@
+# Build- und Ausgabeordner (Ant/NetBeans)
+build/
+dist/
+*.class
+
+# Lokale NetBeans-Einstellungen
+nbproject/private/
+
+# Backups und temporaere Dateien
+*.bak
+*~
+Thumbs.db
+.DS_Store
