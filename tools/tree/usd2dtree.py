@@ -23,51 +23,21 @@ import argparse
 import gzip
 import json
 import os
-import struct
 import sys
 
 import numpy as np
 from pxr import Usd, UsdGeom, UsdShade, UsdSkel
 from scipy.spatial import cKDTree
 
-MAGIC = 0x44545245  # 'DTRE'
-VERSION = 1
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from dtree import MAGIC, VERSION, Out, compact, triangulate, vertex_normals, write_mesh, write_tail
+
 RING = 6
 TWIG_CELL = 0.03      # Rastermass in m fuer den Knotengraphen der Zweige
 MIN_RADIUS = 0.0015
 
 
 # ---------------------------------------------------------------- Netze
-
-def triangulate(counts, idx):
-    """Polygone als Faecher in Dreiecke; liefert (Dreiecke, Flaeche je Dreieck)."""
-    tris, owner = [], []
-    o = 0
-    for f, n in enumerate(counts):
-        for k in range(1, n - 1):
-            tris.append((idx[o], idx[o + k], idx[o + k + 1]))
-            owner.append(f)
-        o += n
-    return np.array(tris, dtype=np.int64), np.array(owner, dtype=np.int64)
-
-
-def vertex_normals(pts, tris):
-    n = np.zeros_like(pts)
-    fn = np.cross(pts[tris[:, 1]] - pts[tris[:, 0]], pts[tris[:, 2]] - pts[tris[:, 0]])
-    for k in range(3):
-        np.add.at(n, tris[:, k], fn)
-    ln = np.linalg.norm(n, axis=1, keepdims=True)
-    ln[ln == 0] = 1
-    return n / ln
-
-
-def compact(pts, tris):
-    """Nur benutzte Punkte behalten."""
-    used = np.unique(tris)
-    remap = -np.ones(len(pts), dtype=np.int64)
-    remap[used] = np.arange(len(used))
-    return pts[used], remap[tris], used
-
 
 def seg_dist(p, a, b):
     """Abstand der Punkte p von der Strecke a-b."""
@@ -280,37 +250,6 @@ def leaves_of(pts, nrm, tris_leaf, wood_pts):
 
 # ---------------------------------------------------------------- Schreiben
 
-class Out:
-    def __init__(self):
-        self.b = bytearray()
-
-    def i(self, v): self.b += struct.pack('>i', int(v))
-    def h(self, v): self.b += struct.pack('>h', int(v))
-    def f(self, v): self.b += struct.pack('>f', float(v))
-    def z(self, v): self.b += struct.pack('>?', bool(v))
-
-    def utf(self, s):
-        e = s.encode('utf-8')
-        self.b += struct.pack('>H', len(e)) + e
-
-    def fa(self, a): self.b += np.asarray(a, dtype='>f4').tobytes()
-    def ia(self, a): self.b += np.asarray(a, dtype='>i4').tobytes()
-    def ha(self, a): self.b += np.asarray(a, dtype='>i2').tobytes()
-    def ba(self, a): self.b += np.asarray(a, dtype='i1').tobytes()
-    def ua(self, a): self.b += np.asarray(a, dtype='u1').tobytes()
-
-
-def write_mesh(o, pts, nrm, tris, joints, weights):
-    """Ein Netz: Punkte (float), Normalen (byte), zwei Gelenke und Gewichte je Punkt, Dreiecke."""
-    o.i(len(pts))
-    o.fa(pts.reshape(-1))
-    o.ba(np.clip(np.round(nrm * 127), -127, 127).reshape(-1))
-    o.ha(joints.reshape(-1))
-    o.ua(np.clip(np.round(weights * 255), 0, 255).reshape(-1))
-    o.i(len(tris))
-    o.ia(tris.reshape(-1))
-
-
 def diffuse(stage, name_part, default):
     for p in stage.Traverse():
         if p.GetTypeName() == 'Shader' and name_part in p.GetName():
@@ -338,6 +277,13 @@ def convert(src, dst, name):
     parents = np.array(UsdSkel.Topology(jnames).GetParentIndices())
     bind = skel.GetBindTransformsAttr().Get()
     jpos = np.array([[m[3][0], m[3][1], m[3][2]] for m in bind]) * mpu
+    # Platzhalter: Gelenke (nicht die Wurzel) im Ursprung ohne Lage, etwa beim Greasewood je Zweig eines;
+    # sie bekommen die Lage ihres Elternteils, Zweige an ihnen werden unten an das nächste echte Gelenk gebunden
+    phantom = np.linalg.norm(jpos, axis=1) < 1e-5
+    phantom[0] = False
+    for j in range(len(jpos)):
+        if phantom[j] and parents[j] >= 0:
+            jpos[j] = jpos[parents[j]]
     by_leaf = {n.split('/')[-1]: k for k, n in enumerate(jnames)}
     by_path = {n: k for k, n in enumerate(jnames)}
 
@@ -410,6 +356,16 @@ def convert(src, dst, name):
     if bjv.shape[1] == 1:
         bjv = np.concatenate([bjv, bjv], 1)
         bwv = np.concatenate([bwv, np.zeros_like(bwv)], 1)
+    if phantom.any():
+        real = np.where(~phantom)[0]
+        tree = cKDTree(jpos[real])
+        ipos = np.array([[mm_[3][0], mm_[3][1], mm_[3][2]] for mm_ in mats]) * mpu
+        bad = phantom[bjv]
+        if bad.any():
+            _, near = tree.query(ipos[bad.any(1)])
+            rows = np.where(bad.any(1))[0]
+            for r, nj in zip(rows, real[near]):
+                bjv[r][bad[r]] = nj
 
     # Wind aus Unreal
     wind = {'GustAttenuation': 0.0, 'bIsGroundCover': False}
@@ -461,8 +417,9 @@ def convert(src, dst, name):
         o.ha(bjv[k, :2])
         o.ua(np.clip(np.round(bwv[k, :2] / max(bwv[k, :2].sum(), 1e-9) * 255), 0, 255))
 
-    with gzip.open(dst, 'wb', compresslevel=9) as fh:
-        fh.write(bytes(o.b))
+    write_tail(o)
+    with open(dst, 'wb') as raw, gzip.GzipFile(filename='', fileobj=raw, mode='wb', compresslevel=9, mtime=0) as fh:
+        fh.write(bytes(o.b))       # ohne Zeitstempel: gleiche Eingabe, gleiche Datei
 
     print(f'{os.path.basename(dst)}: Gelenke {len(jnames)}, Stamm {len(tris)} Dreiecke, '
           f'Zweige {[(p[0], len(p[2][0]), len(p[3])) for p in protos]} (Knoten, Blaetter), '

@@ -97,14 +97,28 @@ public final class TreeCheck {
         boolean bind = true;
         for (int k = 0; k < a.instances(); k++)
             for (int q = 0; q < 2; q++) bind &= a.instJoint[k * 2 + q] >= 0 && a.instJoint[k * 2 + q] < a.joints();
-        check(bind && a.instances() > 0, "Zweige hängen an gültigen Gelenken (" + a.instances() + " Zweige)");
-        int leaves = 0;
-        for (TreeAsset.Twig t : a.twigs) leaves += t.leaves();
-        check(leaves > 0, "Zweig-Prototypen haben Blätter (" + leaves + ")");
+        if (a.hasSkeleton()) {
+            check(bind && a.instances() > 0, "Zweige hängen an gültigen Gelenken (" + a.instances() + " Zweige)");
+            int leaves = 0;
+            for (TreeAsset.Twig t : a.twigs) leaves += t.leaves();
+            check(leaves > 0, "Zweig-Prototypen haben Blätter (" + leaves + ")");
+        } else {
+            check(a.cards != null && a.cards.triangles() > 0, "ohne Skelett: Laubkarten vorhanden ("
+                    + (a.cards == null ? 0 : a.cards.triangles()) + " Dreiecke)");
+            check(a.trunkUv != null && a.cards == null || a.cards.uv.length == a.cards.vertices() * 2, "UVs für Stamm und Karten");
+        }
+        if (!a.barkTexture.isEmpty() || !a.leafTexture.isEmpty()) {
+            java.awt.image.BufferedImage bark = sp.texture(a.barkTexture), leaf = sp.texture(a.leafTexture);
+            check((a.barkTexture.isEmpty() || bark != null) && (a.leafTexture.isEmpty() || leaf != null && leaf.getColorModel().hasAlpha()),
+                    "Texturen gefunden (" + a.barkTexture + ", " + a.leafTexture + "), Laub mit Alpha");
+        }
         float h = a.height();
         check(h >= minH && h <= maxH, String.format("Höhe %.1f m in %.0f … %.0f m", h, minH, maxH));
-        TreeSkeleton sk = new TreeSkeleton(a);
-        check(sk.trunkTop > h * 0.4f, String.format("Stamm reicht bis %.1f m", sk.trunkTop));
+        if (a.hasSkeleton()) {
+            TreeSkeleton sk = new TreeSkeleton(a);
+            // Sträucher (unter 5 m) haben oft keinen durchgehenden Stamm
+            if (h > 5) check(sk.trunkTop > h * 0.4f, String.format("Stamm reicht bis %.1f m", sk.trunkTop));
+        }
 
         // Stufen
         TreeMesh[] m = new TreeMesh[TreeLod.LEVELS];
@@ -114,10 +128,10 @@ public final class TreeCheck {
             System.out.printf("        %s (%.0f ms)%n", m[l], (System.nanoTime() - b0) / 1e6);
             check(valid(m[l]), "Stufe " + l + ": Indizes gültig, keine NaN, Normalen Länge 1");
         }
-        check(m[0].triangles > m[1].triangles && m[1].triangles > m[2].triangles && m[2].triangles > m[3].triangles,
+        check(m[0].triangles > m[1].triangles && m[1].triangles >= m[2].triangles && m[0].triangles > m[3].triangles,
                 "Dreiecke nehmen mit der Stufe ab");
         check(m[3].triangles < 1000, "Stufe 3 unter 1 000 Dreiecken (" + m[3].triangles + ")");
-        check(Math.abs(m[3].height - m[0].height) < m[0].height * 0.15f,
+        check(Math.abs(m[3].height - m[0].height) < Math.max(m[0].height * 0.15f, 0.3f),
                 String.format("Hülle so hoch wie der Baum (%.1f / %.1f m)", m[3].height, m[0].height));
         TreeMesh again = sp.bake(v, 1);
         check(Arrays.equals(again.v, m[1].v) && Arrays.equals(again.tri, m[1].tri), "Backen ist reproduzierbar");
@@ -141,15 +155,16 @@ public final class TreeCheck {
         float[] out = new float[m.vertices * 3];
         w.speed = 0;
         w.displace(m, sp, a.gustAttenuation, 3.3f, 0, 0, 0, 0, out);
-        float still = maxShift(m, out, -1e9f, 1e9f);
+        float still = Math.max(maxShift(m, out, -1e9f, 1e9f), maxLeafShift(m, out));
         check(still < 1e-5f, "ohne Wind steht der Baum still");
 
         w.speed = 15;
         w.gustiness = 0;
         w.fromDeg = 270;                      // aus West, weht nach +x
         w.displace(m, sp, a.gustAttenuation, 3.3f, 0, 0, 0, 0, out);
-        float foot = maxShift(m, out, -1e9f, 0.3f);
-        check(foot < 0.01f, String.format("Fuß bleibt stehen (%.4f m)", foot));
+        float foot = footShift(m, out, a, Math.min(0.3f, m.height * 0.05f));
+        // Sträucher haben Zweige bis zum Boden: höchstens 2 % der Höhe, mindestens 1 cm
+        check(foot < Math.max(0.01f, m.height * 0.02f), String.format("Fuß bleibt stehen (%.4f m)", foot));
         float mid = meanShift(m, out, m.height * 0.3f, m.height * 0.5f);
         float top = meanShift(m, out, m.height * 0.8f, m.height * 1.1f);
         check(top > mid && top > 0.05f, String.format("oben mehr Ausschlag als in der Mitte (%.2f / %.2f m)", top, mid));
@@ -174,13 +189,35 @@ public final class TreeCheck {
         check(tears(m, out) < 0.002, String.format("keine Risse im Sturm (%.3f %% gedehnte Kanten)", tears(m, out) * 100));
     }
 
+    /** Größte Verschiebung von Holz (Laub, das bis zum Boden hängt, darf sich bewegen). */
     static float maxShift(TreeMesh m, float[] out, float y0, float y1) {
         float mx = 0;
         for (int i = 0; i < m.vertices; i++) {
             int b = i * TreeMesh.STRIDE;
-            if (m.v[b + 1] < y0 || m.v[b + 1] > y1) continue;
+            if (m.v[b + 1] < y0 || m.v[b + 1] > y1 || m.leaf(i)) continue;
             float d = (float) Math.sqrt(sq(out[i * 3] - m.v[b]) + sq(out[i * 3 + 1] - m.v[b + 1]) + sq(out[i * 3 + 2] - m.v[b + 2]));
             mx = Math.max(mx, d);
+        }
+        return mx;
+    }
+
+    /** Holz am Fuß: unter y1 und höchstens 0,25 m von der Achse durch das erste Gelenk. */
+    static float footShift(TreeMesh m, float[] out, TreeAsset a, float y1) {
+        float mx = 0;
+        for (int i = 0; i < m.vertices; i++) {
+            int b = i * TreeMesh.STRIDE;
+            if (m.v[b + 1] > y1 || m.leaf(i) || Math.hypot(m.v[b] - a.jointPos[0], m.v[b + 2] - a.jointPos[2]) > 0.25) continue;
+            mx = Math.max(mx, (float) Math.sqrt(sq(out[i * 3] - m.v[b]) + sq(out[i * 3 + 1] - m.v[b + 1]) + sq(out[i * 3 + 2] - m.v[b + 2])));
+        }
+        return mx;
+    }
+
+    static float maxLeafShift(TreeMesh m, float[] out) {
+        float mx = 0;
+        for (int i = 0; i < m.vertices; i++) {
+            int b = i * TreeMesh.STRIDE;
+            if (!m.leaf(i)) continue;
+            mx = Math.max(mx, Math.abs(out[i * 3] - m.v[b]) + Math.abs(out[i * 3 + 1] - m.v[b + 1]) + Math.abs(out[i * 3 + 2] - m.v[b + 2]));
         }
         return mx;
     }

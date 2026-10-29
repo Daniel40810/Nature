@@ -47,10 +47,12 @@ public final class TreeGlDemo implements GLEventListener {
     final TreeWind wind = new TreeWind();
     final TreeGl.Light light = new TreeGl.Light();
     final float area;
+    /** größte Höhe der Varianten: Kamera, Abstand der Bäume und Fläche richten sich danach */
+    final float treeHeight;
     volatile int day = 180;
     volatile float snow;
     volatile boolean running = true;
-    volatile double yaw = 0.7, pitch = 0.18, dist = 55;
+    volatile double yaw = 0.7, pitch = 0.18, dist;
     double time;
     long last;
     double frameMs;
@@ -63,11 +65,16 @@ public final class TreeGlDemo implements GLEventListener {
 
     TreeGlDemo(TreeSpecies sp, int count, float area) {
         this.sp = sp;
-        this.area = area;
+        float hmax = 1;
         trees = new TreeGl(sp);
         Random r = new Random(7);
         List<float[]> pts = new ArrayList<>();
-        float minGap = 6.5f;
+        for (int v = 0; v < sp.variantCount(); v++) hmax = Math.max(hmax, trees.height(v));
+        treeHeight = hmax;
+        this.area = area > 0 ? area : Math.max(30, 14 * hmax);
+        area = this.area;
+        dist = 3.7 * hmax;
+        float minGap = Math.max(1.2f, 0.43f * hmax);
         int tries = 0;
         while (pts.size() < count && tries++ < count * 60) {
             float x = (r.nextFloat() - 0.5f) * area, z = (r.nextFloat() - 0.5f) * area;
@@ -87,7 +94,7 @@ public final class TreeGlDemo implements GLEventListener {
             return;
         }
         int count = args.length > 0 ? Integer.parseInt(args[0]) : 150;
-        float area = args.length > 1 ? Float.parseFloat(args[1]) : 220;
+        float area = args.length > 1 ? Float.parseFloat(args[1]) : -1;
         TreeGlDemo d = new TreeGlDemo(sp, count, area);
         if (args.length > 2) d.day = Integer.parseInt(args[2]);
         SwingUtilities.invokeLater(d::open);
@@ -97,7 +104,7 @@ public final class TreeGlDemo implements GLEventListener {
     static void image(TreeSpecies sp, String[] a) throws Exception {
         String file = a.length > 1 ? a[1] : "bestand.png";
         int count = a.length > 2 ? Integer.parseInt(a[2]) : 150;
-        float area = a.length > 3 ? Float.parseFloat(a[3]) : 220;
+        float area = a.length > 3 ? Float.parseFloat(a[3]) : -1;
         TreeGlDemo d = new TreeGlDemo(sp, count, area);
         if (a.length > 4) d.day = Integer.parseInt(a[4]);
         if (a.length > 5) d.wind.speed = Float.parseFloat(a[5]);
@@ -164,7 +171,7 @@ public final class TreeGlDemo implements GLEventListener {
             }
 
             @Override public void mouseWheelMoved(MouseWheelEvent e) {
-                dist = Math.max(4, Math.min(1500, dist * Math.pow(1.12, e.getWheelRotation())));
+                dist = Math.max(0.3 * treeHeight, Math.min(100 * treeHeight, dist * Math.pow(1.12, e.getWheelRotation())));
             }
         };
         view.addMouseListener(mouse);

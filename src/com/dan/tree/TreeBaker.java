@@ -42,10 +42,22 @@ public final class TreeBaker {
         int nt;
         int leaves;
 
+        /** Bäume ohne Skelett: Achse, größter Abstand von ihr, Höhe */
+        final float axisX, axisZ, spread, treeHeight;
+
         Job(TreeAsset a, TreeLod lod) {
             this.a = a;
             this.lod = lod;
             this.sk = new TreeSkeleton(a);
+            axisX = a.jointPos[0];
+            axisZ = a.jointPos[2];
+            float sp = 0;
+            for (int i = 0; i < a.trunk.pos.length; i += 3)
+                sp = Math.max(sp, (float) Math.hypot(a.trunk.pos[i] - axisX, a.trunk.pos[i + 2] - axisZ));
+            if (a.cards != null) for (int i = 0; i < a.cards.pos.length; i += 3)
+                sp = Math.max(sp, (float) Math.hypot(a.cards.pos[i] - axisX, a.cards.pos[i + 2] - axisZ));
+            spread = Math.max(sp, 0.5f);
+            treeHeight = Math.max(a.height(), 1);
             reach = Arrays.copyOf(sk.limbReach, sk.n);
             float[] r = new float[sk.n];
             for (int j = 0; j < sk.n; j++) if (sk.limb[j] >= 0) r[sk.limb[j]] = Math.max(r[sk.limb[j]], sk.limbReach[j]);
@@ -59,12 +71,16 @@ public final class TreeBaker {
         }
 
         TreeMesh run() {
-            if (lod.trunkOriginal) trunkOriginal();
+            if (!a.hasSkeleton()) trunkStatic(lod.trunkOriginal ? 0 : lod.clusterCells);
+            else if (lod.trunkOriginal) trunkOriginal();
             else trunkTubes(lod.trunkMinRadius, lod.trunkSides);
             if (lod.twigWood) for (int k = 0; k < a.instances(); k++) twigWood(k);
             int bark = nt;
             if (lod.silhouette) hull();
-            else if (lod.leafKeep > 0) for (int k = 0; k < a.instances(); k++) twigLeaves(k);
+            else if (lod.leafKeep > 0) {
+                for (int k = 0; k < a.instances(); k++) twigLeaves(k);
+                if (a.cards != null) cards();
+            }
             float height = 0, radius = 0;
             for (int i = 0; i < nv; i++) {
                 int b = i * TreeMesh.STRIDE;
@@ -72,8 +88,11 @@ public final class TreeBaker {
                 radius = Math.max(radius, (float) Math.hypot(v[b], v[b + 2]));
             }
             occlusion(height);
-            return new TreeMesh(Arrays.copyOf(v, nv * TreeMesh.STRIDE), nv, Arrays.copyOf(t, nt * 3), nt, bark, leaves,
+            TreeMesh m = new TreeMesh(Arrays.copyOf(v, nv * TreeMesh.STRIDE), nv, Arrays.copyOf(t, nt * 3), nt, bark, leaves,
                     height, radius, lod);
+            m.barkTextured = !a.barkTexture.isEmpty() && a.trunkUv != null;
+            m.leafTextured = !a.leafTexture.isEmpty() && a.cards != null;
+            return m;
         }
 
         // ---------------------------------------------------------- Wind je Gelenk
@@ -106,6 +125,195 @@ public final class TreeBaker {
 
         static int dominant(short[] joint, float[] weight, int i) {
             return weight[i * 2] >= weight[i * 2 + 1] ? joint[i * 2] : joint[i * 2 + 1];
+        }
+
+        // ---------------------------------------------------------- Wind ohne Skelett
+
+        /** Ausschlag mit dem Hauptast aus dem Abstand zur Achse: (r/R)² · R. */
+        float synthLimb(float x, float z) {
+            float r = (float) Math.hypot(x - axisX, z - axisZ);
+            return sq(r / spread) * spread * 0.8f;
+        }
+
+        /** Phase aus der Richtung um die Achse; stetig, weil 0 und 1 dieselbe Phase sind. */
+        float synthPhase(float x, float z) {
+            double ang = Math.atan2(z - axisZ, x - axisX) / (2 * Math.PI);
+            return (float) (ang - Math.floor(ang));
+        }
+
+        /**
+         * Stamm ohne Skelett: Original (cells 0) oder durch Rasterzellen der Größe Höhe/cells vereinfacht
+         * (Punkte einer Zelle werden einer, entartete Dreiecke fallen weg).
+         */
+        void trunkStatic(int cells) {
+            TreeAsset.Mesh m = a.trunk;
+            float[] uv = a.trunkUv;
+            int n = m.vertices();
+            int[] map = new int[n];
+            float[] pos, nrm, tex;
+            int nc;
+            if (cells <= 0) {
+                for (int i = 0; i < n; i++) map[i] = i;
+                pos = m.pos;
+                nrm = m.nrm;
+                tex = uv;
+                nc = n;
+            } else {
+                float cell = treeHeight / cells;
+                java.util.HashMap<Long, Integer> ids = new java.util.HashMap<>();
+                FloatList sum = new FloatList();
+                for (int i = 0; i < n; i++) {
+                    long kx = (long) Math.floor(m.pos[i * 3] / cell), ky = (long) Math.floor(m.pos[i * 3 + 1] / cell),
+                            kz = (long) Math.floor(m.pos[i * 3 + 2] / cell);
+                    long key = (kx & 0x1FFFFF) << 42 | (ky & 0x1FFFFF) << 21 | (kz & 0x1FFFFF);
+                    Integer id = ids.get(key);
+                    if (id == null) {
+                        id = ids.size();
+                        ids.put(key, id);
+                        sum.add(0, 0, 0, 0);
+                        sum.add(0, 0, 0, 0);
+                        sum.add(uv != null ? uv[i * 2] : 0, uv != null ? uv[i * 2 + 1] : 0, 0, 0);
+                    }
+                    map[i] = id;
+                    int b = id * 12;
+                    for (int e = 0; e < 3; e++) {
+                        sum.f[b + e] += m.pos[i * 3 + e];
+                        sum.f[b + 4 + e] += m.nrm[i * 3 + e];
+                    }
+                    sum.f[b + 3]++;
+                }
+                nc = ids.size();
+                pos = new float[nc * 3];
+                nrm = new float[nc * 3];
+                tex = new float[nc * 2];
+                for (int c = 0; c < nc; c++) {
+                    int b = c * 12;
+                    float l = (float) Math.sqrt(sq3(sum.f[b + 4], sum.f[b + 5], sum.f[b + 6]));
+                    for (int e = 0; e < 3; e++) {
+                        pos[c * 3 + e] = sum.f[b + e] / sum.f[b + 3];
+                        nrm[c * 3 + e] = l > 1e-6f ? sum.f[b + 4 + e] / l : (e == 1 ? 1 : 0);
+                    }
+                    tex[c * 2] = sum.f[b + 8];
+                    tex[c * 2 + 1] = sum.f[b + 9];
+                }
+            }
+            int base = nv;
+            for (int c = 0; c < nc; c++) {
+                float x = pos[c * 3], y = pos[c * 3 + 1], z = pos[c * 3 + 2];
+                vertex(x, y, z, nrm[c * 3], nrm[c * 3 + 1], nrm[c * 3 + 2], synthLimb(x, z), 0, 0,
+                        synthPhase(x, z), 0, 0, hash(c, 3), tex != null ? tex[c * 2] : 0, tex != null ? tex[c * 2 + 1] : 0);
+            }
+            java.util.HashSet<Long> seen = new java.util.HashSet<>();
+            for (int i = 0; i < m.tri.length; i += 3) {
+                int i0 = map[m.tri[i]], i1 = map[m.tri[i + 1]], i2 = map[m.tri[i + 2]];
+                if (i0 == i1 || i1 == i2 || i0 == i2) continue;
+                if (cells > 0) {
+                    int lo = Math.min(i0, Math.min(i1, i2)), hi = Math.max(i0, Math.max(i1, i2)), mid = i0 + i1 + i2 - lo - hi;
+                    if (!seen.add(((long) lo * nc + mid) * nc + hi)) continue;
+                }
+                triangle(base + i0, base + i1, base + i2);
+            }
+        }
+
+        static float sq3(float x, float y, float z) {
+            return x * x + y * y + z * z;
+        }
+
+        int[] cardOf;
+        int cardCount;
+
+        /** Karten = zusammenhängende Dreiecke der Laubkarten. */
+        void cardComponents() {
+            if (cardOf != null) return;
+            TreeAsset.Cards c = a.cards;
+            int n = c.vertices();
+            int[] par = new int[n];
+            for (int i = 0; i < n; i++) par[i] = i;
+            for (int i = 0; i < c.tri.length; i += 3) {
+                int r0 = find(par, c.tri[i]);
+                par[find(par, c.tri[i + 1])] = r0;
+                par[find(par, c.tri[i + 2])] = r0;
+            }
+            cardOf = new int[n];
+            int[] id = new int[n];
+            Arrays.fill(id, -1);
+            for (int i = 0; i < n; i++) {
+                int r = find(par, i);
+                if (id[r] < 0) id[r] = cardCount++;
+                cardOf[i] = id[r];
+            }
+        }
+
+        static int find(int[] par, int x) {
+            while (par[x] != x) {
+                par[x] = par[par[x]];
+                x = par[x];
+            }
+            return x;
+        }
+
+        float[][] cardCenters() {
+            cardComponents();
+            float[][] c = new float[cardCount][4];
+            float[] p = a.cards.pos;
+            for (int i = 0; i < cardOf.length; i++) {
+                float[] q = c[cardOf[i]];
+                q[0] += p[i * 3];
+                q[1] += p[i * 3 + 1];
+                q[2] += p[i * 3 + 2];
+                q[3]++;
+            }
+            for (float[] q : c) for (int e = 0; e < 3; e++) q[e] /= Math.max(q[3], 1);
+            return c;
+        }
+
+        /** Laubkarten: ausdünnen und vergrößern wie die Blätter; Ansatz ist die Ecke nächst der Achse. */
+        void cards() {
+            TreeAsset.Cards c = a.cards;
+            float[][] cen = cardCenters();
+            int n = c.vertices();
+            int[] base = new int[cardCount];
+            Arrays.fill(base, -1);
+            for (int i = 0; i < n; i++) {
+                int k = cardOf[i];
+                float r = (float) Math.hypot(c.pos[i * 3] - axisX, c.pos[i * 3 + 2] - axisZ);
+                if (base[k] < 0 || r < Math.hypot(c.pos[base[k] * 3] - axisX, c.pos[base[k] * 3 + 2] - axisZ)) base[k] = i;
+            }
+            float[] size = new float[cardCount];
+            for (int i = 0; i < n; i++) {
+                int k = cardOf[i], b = base[k];
+                size[k] = Math.max(size[k], len(c.pos, i * 3, c.pos[b * 3], c.pos[b * 3 + 1], c.pos[b * 3 + 2]));
+            }
+            boolean[] keep = new boolean[cardCount];
+            for (int k = 0; k < cardCount; k++) keep[k] = lod.leafKeep >= 1 || hash(k, 7) < lod.leafKeep;
+            float grow = (float) Math.sqrt(1 / Math.max(lod.leafKeep, 1e-3f));
+            float crownY = treeHeight * 0.6f;
+            int[] map = new int[n];
+            for (int i = 0; i < n; i++) {
+                int k = cardOf[i];
+                if (!keep[k]) { map[i] = -1; continue; }
+                float[] q = cen[k];
+                float x = q[0] + (c.pos[i * 3] - q[0]) * grow, y = q[1] + (c.pos[i * 3 + 1] - q[1]) * grow,
+                        z = q[2] + (c.pos[i * 3 + 2] - q[2]) * grow;
+                int b = base[k];
+                float bx = q[0] + (c.pos[b * 3] - q[0]) * grow, by = q[1] + (c.pos[b * 3 + 1] - q[1]) * grow,
+                        bz = q[2] + (c.pos[b * 3 + 2] - q[2]) * grow;
+                float d = (float) Math.sqrt(sq3(x - bx, y - by, z - bz));
+                float sz = Math.max(size[k] * grow, 1e-3f);
+                // Normale zur Hälfte nach außen gebogen: weiche Krone statt flacher Karten
+                float ox = x - axisX, oy = (y - crownY) * 0.5f, oz = z - axisZ;
+                float ol = (float) Math.sqrt(sq3(ox, oy, oz)) + 1e-6f;
+                float nx = c.nrm[i * 3] + ox / ol, ny = c.nrm[i * 3 + 1] + oy / ol, nz = c.nrm[i * 3 + 2] + oz / ol;
+                float nl = (float) Math.sqrt(sq3(nx, ny, nz)) + 1e-6f;
+                map[i] = nv;
+                vertex(x, y, z, nx / nl, ny / nl, nz / nl, synthLimb(x, z), sq(d / sz) * sz * 0.6f, Math.min(1, d / sz),
+                        synthPhase(x, z), hash(k, 41), 1, hash(k, 43), c.uv[i * 2], c.uv[i * 2 + 1]);
+            }
+            for (int i = 0; i < c.tri.length; i += 3) {
+                if (map[c.tri[i]] < 0) continue;
+                triangle(map[c.tri[i]], map[c.tri[i + 1]], map[c.tri[i + 2]]);
+            }
+            for (boolean k : keep) if (k) leaves++;
         }
 
         // ---------------------------------------------------------- Stamm
@@ -144,9 +352,9 @@ public final class TreeBaker {
                 float r0 = Math.min(sk.radius[p], r1 * 1.3f);
                 copy(sk.pos, p * 3, p0);
                 copy(sk.pos, j * 3, p1);
-                // Anfang: Werte des Gelenks j, um die Strecke zurückgenommen
-                float la0 = sk.limb[j] < 0 ? 0 : sq(Math.max(0, sk.limbAlong[j] - seg) / reach[j]) * reach[j];
-                float ta0 = sk.order[j] < 2 ? 0 : sq(Math.max(0, sk.along[j] - seg) / sk.branchLength[j]) * sk.branchLength[j];
+                // Anfang: Werte des Vorfahren p, wenn er im selben Hauptast bzw. Ast liegt, sonst beginnt dort ein neuer
+                float la0 = sk.limb[j] >= 0 && sk.limb[p] == sk.limb[j] ? limbAmp(p) : 0;
+                float ta0 = sk.order[j] >= 2 && sk.branch[p] == sk.branch[j] ? twigAmp(p) : 0;
                 tube(p0, r0, la0, ta0, p1, r1, limbAmp(j), twigAmp(j), limbPhase(j), twigPhase(j), sides, hash(j, 3));
             }
         }
@@ -338,37 +546,42 @@ public final class TreeBaker {
 
         void hull() {
             int S = lod.hullSectors, B = lod.hullBands;
-            // Blattmitten aller Zweige im Baumraum
-            float cx = 0, cz = 0, y0 = Float.MAX_VALUE, y1 = -Float.MAX_VALUE;
-            int count = 0;
+            // Blattmitten (Zweige) bzw. Kartenmitten im Baumraum, je mit Ausschlag des Hauptasts
+            FloatList pts = new FloatList();
             float[] q = new float[3];
             for (int k = 0; k < a.instances(); k++) {
                 TreeAsset.Twig tw = a.twigs[a.instProto[k]];
+                Base b = new Base(k);
+                float amp = b.limb(b.length * 0.7f);
                 for (int l = 0; l < tw.leaves(); l++) {
                     a.transform(k, tw.leafCenter, l * 3, q, 0);
-                    cx += q[0];
-                    cz += q[2];
-                    y0 = Math.min(y0, q[1]);
-                    y1 = Math.max(y1, q[1]);
-                    count++;
+                    pts.add(q[0], q[1], q[2], amp);
                 }
             }
+            if (a.cards != null) {
+                float[][] cc = cardCenters();
+                for (float[] c : cc) pts.add(c[0], c[1], c[2], synthLimb(c[0], c[2]));
+            }
+            int count = pts.n / 4;
             if (count == 0) return;
+            float cx = 0, cz = 0, y0 = Float.MAX_VALUE, y1 = -Float.MAX_VALUE;
+            for (int i = 0; i < count; i++) {
+                cx += pts.f[i * 4];
+                cz += pts.f[i * 4 + 2];
+                y0 = Math.min(y0, pts.f[i * 4 + 1]);
+                y1 = Math.max(y1, pts.f[i * 4 + 1]);
+            }
             cx /= count;
             cz /= count;
             float[][] r = new float[B][S];
             float[][] la = new float[B][S];
-            for (int k = 0; k < a.instances(); k++) {
-                TreeAsset.Twig tw = a.twigs[a.instProto[k]];
-                Base b = new Base(k);
-                for (int l = 0; l < tw.leaves(); l++) {
-                    a.transform(k, tw.leafCenter, l * 3, q, 0);
-                    int band = Math.min(B - 1, (int) ((q[1] - y0) / (y1 - y0 + 1e-6f) * B));
-                    double ang = Math.atan2(q[2] - cz, q[0] - cx);
-                    int sec = Math.floorMod((int) Math.floor((ang / (2 * Math.PI) + 0.5 / S) * S), S);
-                    float d = (float) Math.hypot(q[0] - cx, q[2] - cz) + 0.08f;
-                    if (d > r[band][sec]) { r[band][sec] = d; la[band][sec] = b.limb(b.length * 0.7f); }
-                }
+            for (int i = 0; i < count; i++) {
+                float qx = pts.f[i * 4], qy = pts.f[i * 4 + 1], qz = pts.f[i * 4 + 2];
+                int band = Math.min(B - 1, (int) ((qy - y0) / (y1 - y0 + 1e-6f) * B));
+                double ang = Math.atan2(qz - cz, qx - cx);
+                int sec = Math.floorMod((int) Math.floor((ang / (2 * Math.PI) + 0.5 / S) * S), S);
+                float d = (float) Math.hypot(qx - cx, qz - cz) + 0.08f;
+                if (d > r[band][sec]) { r[band][sec] = d; la[band][sec] = pts.f[i * 4 + 3]; }
             }
             // Lücken glätten
             for (int band = 0; band < B; band++) {
@@ -377,7 +590,7 @@ public final class TreeBaker {
                 for (int s = 0; s < S; s++) if (r[band][s] <= 0) r[band][s] = m * 0.6f;
             }
             int bottom = nv;
-            vertex(cx, y0, cz, 0, -1, 0, 0, 0, 0, 0, 0, 1, 0.5f);
+            vertex(cx, y0, cz, 0, -1, 0, 0, 0, 0, 0, 0, HULL, 0.5f);
             int[] ring = new int[B];
             for (int band = 0; band < B; band++) {
                 ring[band] = nv;
@@ -389,11 +602,11 @@ public final class TreeBaker {
                     float ny = (band == 0 ? -0.5f : band == B - 1 ? 0.5f : 0);
                     float nl = (float) Math.sqrt(1 + ny * ny);
                     vertex(cx + ca * rr, y, cz + sa * rr, ca / nl, ny / nl, sa / nl, la[band][s], 0, 0.3f,
-                            hash(s, 5), hash(band, s), 1, 0.5f);
+                            hash(s, 5), hash(band, s), HULL, 0.5f);
                 }
             }
             int top = nv;
-            vertex(cx, y1 + 0.15f, cz, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0.5f);
+            vertex(cx, y1 + 0.15f, cz, 0, 1, 0, 0, 0, 0, 0, 0, HULL, 0.5f);
             for (int s = 0; s < S; s++) {
                 int s1 = (s + 1) % S;
                 triangle(bottom, ring[0] + s1, ring[0] + s);
@@ -414,7 +627,7 @@ public final class TreeBaker {
             for (int i = 0; i < nv; i++) {
                 int b = i * TreeMesh.STRIDE;
                 if (v[b + TreeMesh.KIND] < 0.5f) continue;
-                int band = Math.min(B - 1, (int) (v[b + 1] / Math.max(height, 1e-3f) * B));
+                int band = Math.min(B - 1, Math.max(0, (int) (v[b + 1] / Math.max(height, 1e-3f) * B)));
                 crown[band] = Math.max(crown[band], (float) Math.hypot(v[b] - cx, v[b + 2] - cz));
             }
             float yLeaf = height;
@@ -474,6 +687,11 @@ public final class TreeBaker {
 
         void vertex(float x, float y, float z, float nx, float ny, float nz, float limb, float twig, float flutter,
                     float limbPh, float twigPh, float kind, float rand) {
+            vertex(x, y, z, nx, ny, nz, limb, twig, flutter, limbPh, twigPh, kind, rand, 0, 0);
+        }
+
+        void vertex(float x, float y, float z, float nx, float ny, float nz, float limb, float twig, float flutter,
+                    float limbPh, float twigPh, float kind, float rand, float u, float w) {
             if ((nv + 1) * TreeMesh.STRIDE > v.length) v = Arrays.copyOf(v, v.length * 2);
             int b = nv * TreeMesh.STRIDE;
             v[b] = x;
@@ -489,6 +707,8 @@ public final class TreeBaker {
             v[b + TreeMesh.PHASE_TWIG] = twigPh;
             v[b + TreeMesh.KIND] = kind;
             v[b + TreeMesh.RAND] = rand;
+            v[b + TreeMesh.U] = u;
+            v[b + TreeMesh.V] = w;
             nv++;
         }
 
@@ -542,6 +762,23 @@ public final class TreeBaker {
             if (keep) { anc[i] = a; last[i] = i; } else last[i] = a;
         }
         return anc;
+    }
+
+    /** Laub-Art der Kronenhülle: Laub, aber ohne Textur */
+    static final float HULL = 2;
+
+    /** Wachsende Liste von float. */
+    static final class FloatList {
+        float[] f = new float[256];
+        int n;
+
+        void add(float a, float b, float c, float d) {
+            if (n + 4 > f.length) f = Arrays.copyOf(f, f.length * 2);
+            f[n++] = a;
+            f[n++] = b;
+            f[n++] = c;
+            f[n++] = d;
+        }
     }
 
     static void copy(float[] src, int o, float[] dst) {

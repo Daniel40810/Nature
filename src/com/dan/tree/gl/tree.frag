@@ -4,6 +4,9 @@ in vec3 vNormal;
 in vec3 vColor;
 in float vLeaf;
 in float vAo;
+in vec2 vUv;
+in float vTex;
+uniform sampler2D uBarkTex, uLeafTex;  // sRGB-Texturen, liefern linear
 uniform vec3 uCam;
 uniform vec3 uSunDir;                   // zur Sonne
 uniform vec3 uSunColor, uSkyColor, uGroundColor;
@@ -13,6 +16,14 @@ uniform int uTonemap;                   // 1: Belichtung, Reinhard, sRGB hier; 0
 out vec4 fragColor;
 
 void main() {
+    vec3 albedo = vColor;
+    if (vTex > 1.5) {
+        vec4 t = texture(uLeafTex, vUv);
+        if (t.a < 0.5) discard;
+        albedo *= t.rgb;
+    } else if (vTex > 0.5) {
+        albedo *= texture(uBarkTex, vUv).rgb;
+    }
     vec3 n = normalize(vNormal);
     vec3 v = normalize(uCam - vWorld);
     float trans = 0.0;
@@ -28,7 +39,7 @@ void main() {
     float hemi = 0.5 + 0.5 * n.y;
     vec3 light = uSunColor * (ndl + trans) * (0.35 + 0.65 * vAo)
                + (uSkyColor * hemi + uGroundColor * (1.0 - hemi)) * (0.4 + 0.6 * vAo);
-    vec3 c = vColor * light;
+    vec3 c = albedo * light;
     float dist = length(uCam - vWorld);
     c = mix(c, uFog.rgb, 1.0 - exp(-dist / max(uFog.w, 1.0)));
     if (uTonemap == 1) {
