@@ -37,7 +37,7 @@ Unreal (PVE) ─ USD + DynamicWind.json ─▶ tools/tree/usd2dtree.py ─▶ <a
 | 2 | Röhren mit 4 Seiten ab 2 cm | – | 10 % als Raute (wie die Büschel in `com.dan.forest`) | 50 000 / 5 700 |
 | 3 | Stamm und Hauptäste ab 3 cm, 3 Seiten | – | Hülle der Krone, 8 × 5 | 344 / 272 |
 
-Wenn Blätter wegfallen, werden die übrigen um 1/√Anteil größer, damit die Laubfläche gleich bleibt. Ohne Laub zeigt auch Stufe 3 das Gerippe aus Stamm und Hauptästen. Alle Felder von `TreeLod` sind öffentlich, eigene Stufen sind möglich. `TreeGl` wählt die Stufe nach der Entfernung in Baumhöhen (`lodDistance`, voreingestellt 1,4 / 3,5 / 9).
+Wenn Blätter wegfallen, werden die übrigen um 1/√Anteil größer, damit die Laubfläche gleich bleibt. Ohne Laub zeigt auch Stufe 3 das Gerippe aus Stamm und Hauptästen. Alle Felder von `TreeLod` sind öffentlich, eigene Stufen sind möglich. `TreeGl` wählt die Stufe nach der Entfernung in Baumhöhen (`lodDistance`, voreingestellt 1,4 / 3,5 / 14).
 
 ## Wind
 
@@ -94,7 +94,7 @@ gl.draw(gl4, view, light, t);
 | `gl/TreeGl`, `gl/tree.vert`, `gl/tree.frag` | Bestand mit JOGL: Netze im Hintergrund backen, Eimer je Variante und Stufe, ein Aufruf je Eimer |
 | `demo/SoftRenderer` | Renderer auf dem Prozessor für Vorschau und Bilder |
 | `demo/TreeDemo` | Vorschau einer Art: Einzelbaum, Hain, Stufen nebeneinander; `--bild` ohne Fenster |
-| `demo/TreeGlDemo` | Bestand mit JOGL |
+| `demo/TreeGlDemo` | Bestand mit JOGL in einem `GLCanvas` (ein `GLJPanel` bleibt im `FFrame` schwarz); `--bild` ohne Fenster |
 | `demo/TreeCheck` | Selbsttest einer Art |
 
 ## Neue Art hinzufügen
@@ -110,5 +110,6 @@ gl.draw(gl4, view, light, t);
 - Unreal liefert keine Texturen mit (nur Grundfarben). Rinde und Laub sind einfarbig mit Zufall je Blatt und Verdeckung.
 - Die Hülle in Stufe 3 ist nur für große Entfernung gedacht. Aus der Nähe wirkt sie wie ein glatter Körper.
 - In `gl/` gibt es noch keine Schattenkarte. Der Prozessor-Renderer zeichnet unter jeder Krone einen weichen Fleck.
+- `TreeGlDemo` fordert kein Multisampling an. Fehler beim Backen, Hochladen oder in OpenGL zeigt es in der Statuszeile an (`TreeGl.error()`).
 - Stufe 0 der großen Varianten (A 2,8 Mio., D 1,7 Mio. Dreiecke) ist für Nahansichten gedacht und braucht etwa 3 s zum Backen. `TreeGl` backt im Hintergrund und zeigt bis dahin die nächstgröbere fertige Stufe.
 - Der Konverter liest Y-oben-USD mit einem PointInstancer für die Zweige, so wie ihn der Procedural Vegetation Editor schreibt. FBX (etwa `trees_60_fbx.zip`) wird noch nicht gelesen.
