@@ -110,42 +110,81 @@ public final class SoftRenderer {
         });
     }
 
-    /** Boden als Gitter um (cx, cz), Seitenlänge size, Farbe linear. */
+    private BufferedImage groundImage;
+    private float groundTileX = 2, groundTileZ = 2;
+
+    /** Bodentextur (sRGB; null = einfarbig) und ihre Kachelgröße in m. */
+    public void groundTexture(BufferedImage img, float tileX, float tileZ) {
+        groundImage = img;
+        groundTileX = tileX;
+        groundTileZ = tileZ;
+    }
+
+    /**
+     * Boden als Ringe um den Fußpunkt der Kamera, nah fein, fern grob (bis size/2 um (cx, cz) hinaus),
+     * damit nahe Zellen nicht an der Nahebene wegfallen. Farbe linear, mit Textur eine Tönung.
+     */
     public void ground(float cx, float cz, float size, float[] color, float snow) {
-        int n = 48;
-        float[] pos = new float[(n + 1) * (n + 1) * 3];
+        int rings = 56, seg = 96;
+        float ox = ex, oz = ez;
+        float rmax = (float) Math.hypot(ex - cx, ez - cz) + size / 2;
+        float rmin = Math.max(0.01f, Math.abs(ey) * 0.04f);
+        int nv = 1 + rings * seg;
+        float[] pos = new float[nv * 3];
         float[] col = new float[pos.length];
-        for (int j = 0; j <= n; j++)
-            for (int i = 0; i <= n; i++) {
-                int k = (j * (n + 1) + i) * 3;
-                float x = cx + (i / (float) n - 0.5f) * size, z = cz + (j / (float) n - 0.5f) * size;
-                pos[k] = x;
-                pos[k + 1] = 0;
-                pos[k + 2] = z;
-                float shade = 1;
-                for (int b = 0; b < blobs.length; b += 4) {
-                    float h = blobs[b + 3] / Math.max(sunDir[1], 0.2f);
-                    float d = (float) Math.hypot(x - blobs[b] + sunDir[0] * h, z - blobs[b + 1] + sunDir[2] * h);
-                    float r = blobs[b + 2];
-                    shade *= 1 - 0.55f * smooth(r * 1.15f, r * 0.4f, d);
-                }
-                float light = sunDir[1] * shade;
-                float var = 0.92f + 0.08f * (float) (Math.sin(x * 0.37 + Math.sin(z * 0.23) * 2) * Math.sin(z * 0.31 + x * 0.11));
-                for (int e = 0; e < 3; e++) {
-                    float c = color[e] * var;
-                    c = c + (0.8f - c) * snow;
-                    col[k + e] = c * (sun[e] * light + sky[e] * 0.9f);
-                }
+        float[] uv = new float[nv * 2];
+        Texture tex = texture(groundImage);
+        if (tex != null) color = new float[]{0.8f, 0.8f, 0.8f};
+        for (int v = 0; v < nv; v++) {
+            float x, z;
+            if (v == 0) {
+                x = ox;
+                z = oz;
+            } else {
+                int ring = (v - 1) / seg, sgm = (v - 1) % seg;
+                float r = (float) (rmin * Math.pow(rmax / rmin, ring / (double) (rings - 1)));
+                double ang = 2 * Math.PI * sgm / seg;
+                x = ox + (float) Math.cos(ang) * r;
+                z = oz + (float) Math.sin(ang) * r;
             }
-        int[] tri = new int[n * n * 6];
+            int k = v * 3;
+            pos[k] = x;
+            pos[k + 1] = 0;
+            pos[k + 2] = z;
+            uv[v * 2] = x / groundTileX;
+            uv[v * 2 + 1] = z / groundTileZ;
+            float shade = 1;
+            for (int b = 0; b < blobs.length; b += 4) {
+                float h = blobs[b + 3] / Math.max(sunDir[1], 0.2f);
+                float d = (float) Math.hypot(x - blobs[b] + sunDir[0] * h, z - blobs[b + 1] + sunDir[2] * h);
+                float r = blobs[b + 2];
+                shade *= 1 - 0.55f * smooth(r * 1.15f, r * 0.4f, d);
+            }
+            float light = sunDir[1] * shade;
+            float var = 0.92f + 0.08f * (float) (Math.sin(x * 0.37 + Math.sin(z * 0.23) * 2) * Math.sin(z * 0.31 + x * 0.11));
+            for (int e = 0; e < 3; e++) {
+                float c = color[e] * var;
+                c = c + (0.8f - c) * snow;
+                col[k + e] = c * (sun[e] * light + sky[e] * 0.9f);
+            }
+        }
+        int[] tri = new int[(seg + (rings - 1) * seg * 2) * 3];
         int t = 0;
-        for (int j = 0; j < n; j++)
-            for (int i = 0; i < n; i++) {
-                int a = j * (n + 1) + i, b = a + 1, c = a + n + 1, d = c + 1;
-                tri[t++] = a; tri[t++] = c; tri[t++] = b;
-                tri[t++] = b; tri[t++] = c; tri[t++] = d;
+        for (int sgm = 0; sgm < seg; sgm++) {
+            tri[t++] = 0; tri[t++] = 1 + (sgm + 1) % seg; tri[t++] = 1 + sgm;
+        }
+        for (int ring = 0; ring + 1 < rings; ring++)
+            for (int sgm = 0; sgm < seg; sgm++) {
+                int a = 1 + ring * seg + sgm, b = 1 + ring * seg + (sgm + 1) % seg, c = a + seg, d = b + seg;
+                tri[t++] = a; tri[t++] = b; tri[t++] = c;
+                tri[t++] = b; tri[t++] = d; tri[t++] = c;
             }
-        raster(project(pos, pos.length / 3), col, tri, tri.length / 3, null, null, null);
+        byte[] which = null;
+        if (tex != null) {
+            which = new byte[tri.length / 3];
+            java.util.Arrays.fill(which, (byte) 1);
+        }
+        raster(project(pos, nv), col, tri, tri.length / 3, uv, which, new Texture[]{null, tex, null});
     }
 
     /**

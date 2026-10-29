@@ -5,6 +5,7 @@ import com.dan.fcombobox.FComboBox;
 import com.dan.fframe.FFrame;
 import com.dan.fslider.FSlider;
 import com.dan.tree.TreeAsset;
+import com.dan.tree.TreeBaker;
 import com.dan.tree.TreeLod;
 import com.dan.tree.TreeMesh;
 import com.dan.tree.TreeSeason;
@@ -41,6 +42,8 @@ public final class TreeDemo {
     static final Color INK = new Color(225, 232, 236);
     static final Color MUTED = new Color(140, 152, 160);
     static final String[] VIEWS = {"Einzelbaum", "Hain", "Stufen nebeneinander"};
+    static final String[] GRASS_VIEWS = {"Büschel", "Wiese", "Stufen nebeneinander"};
+    static final String[] GROUND_VIEWS = {"Gelände", "Gelände von oben", "Stufen nebeneinander"};
     static final String[] MONTHS = {"Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"};
     static final int[] MONTH_START = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
 
@@ -56,21 +59,41 @@ public final class TreeDemo {
     volatile String status = "";
     float time;
 
-    /** Ein Baum der Szene. */
-    record Placed(int variant, float x, float z, float yaw, float scale, int fixedLod) {}
+    /** Ein Baum (Büschel, Geländestück) der Szene; fixedLod −1 = nach Entfernung. */
+    public record Placed(int variant, float x, float y, float z, float yaw, float scale, int fixedLod) {
+        public Placed(int variant, float x, float z, float yaw, float scale, int fixedLod) {
+            this(variant, x, 0, z, yaw, scale, fixedLod);
+        }
+    }
 
-    TreeDemo(TreeSpecies sp) {
+    /** Anordnung für die Ansicht „viele“ (Hain, Wiese), etwa aus {@code com.dan.grass.GrassField}. */
+    @FunctionalInterface
+    public interface Layout {
+        /** Alle Stücke in einem Kreis vom Radius r (m) um den Ursprung. */
+        List<Placed> place(int variants, float radius);
+    }
+
+    /** Optional: Anordnung für Ansicht 1, Bodentextur und ihre Kachelgröße (m). */
+    public Layout layout;
+    public BufferedImage groundTexture;
+    public float groundTileX = 2, groundTileZ = 2;
+
+    public TreeDemo(TreeSpecies sp) {
         this.sp = sp;
         wind.speed = 6;
         wind.gustiness = 0.5f;
     }
 
     public static void run(TreeSpecies sp, String[] args) throws Exception {
+        run(new TreeDemo(sp), args);
+    }
+
+    /** Wie {@link #run(TreeSpecies, String[])}, mit einer vorbereiteten Demo (Anordnung, Boden). */
+    public static void run(TreeDemo d, String[] args) throws Exception {
         if (args.length > 0 && args[0].equals("--bild")) {
-            image(sp, args);
+            image(d, args);
             return;
         }
-        TreeDemo d = new TreeDemo(sp);
         if (args.length > 0) d.view = Integer.parseInt(args[0]);
         d.yaw = defaultYaw(d.view);
         if (args.length > 1) d.variant = Integer.parseInt(args[1]);
@@ -81,11 +104,10 @@ public final class TreeDemo {
 
     // ------------------------------------------------------------------ Bild ohne Fenster
 
-    static void image(TreeSpecies sp, String[] a) throws Exception {
-        TreeDemo d = new TreeDemo(sp);
+    static void image(TreeDemo d, String[] a) throws Exception {
         String file = a.length > 1 ? a[1] : "baum.png";
         String v = a.length > 2 ? a[2] : "einzel";
-        d.view = v.startsWith("hain") ? 1 : v.startsWith("stuf") ? 2 : 0;
+        d.view = v.startsWith("hain") || v.startsWith("wiese") || v.startsWith("oben") ? 1 : v.startsWith("stuf") ? 2 : 0;
         d.yaw = defaultYaw(d.view);
         d.variant = a.length > 3 ? Integer.parseInt(a[3]) : 0;
         d.lodChoice = a.length > 4 && !a[4].equals("auto") ? Integer.parseInt(a[4]) : -1;
@@ -105,6 +127,11 @@ public final class TreeDemo {
         List<Placed> out = new ArrayList<>();
         switch (view) {
             case 1 -> {
+                if (layout != null) return layout.place(sp.variantCount(), radiusFor(view));
+                if (sp.form == TreeSpecies.Form.GROUND) {
+                    out.add(new Placed(variant, 0, 0, 0, 1, lodChoice));
+                    break;
+                }
                 Random r = new Random(42);
                 List<float[]> pts = new ArrayList<>();
                 pts.add(new float[]{0, 0});
@@ -119,7 +146,7 @@ public final class TreeDemo {
                             r.nextFloat() * 6.283f, 0.85f + r.nextFloat() * 0.25f, -1));
             }
             case 2 -> {
-                float gap = Math.max(9, height(variant) * 0.75f);
+                float gap = sp.form == TreeSpecies.Form.TREE ? Math.max(9, height(variant) * 0.75f) : size(variant) * 1.3f;
                 for (int l = 0; l < TreeLod.LEVELS; l++)
                     out.add(new Placed(variant, (l - 1.5f) * gap, 0, 0, 1, l));
             }
@@ -137,19 +164,53 @@ public final class TreeDemo {
         return mesh(v, 3).height;
     }
 
+    /** Maß für Kamera und Abstände: Höhe, bei Gelände der halbe Durchmesser. */
+    float size(int v) {
+        TreeMesh m = mesh(v, 3);
+        return sp.form == TreeSpecies.Form.GROUND ? m.radius : Math.max(m.height, sp.form == TreeSpecies.Form.GRASS ? 0.05f : 1);
+    }
+
+    /** Radius der Ansicht „viele“: Wiese 30 Grashöhen (mindestens 4 m). */
+    float radiusFor(int view) {
+        return Math.max(4, size(variant) * 30);
+    }
+
+    String[] views() {
+        return sp.form == TreeSpecies.Form.GRASS ? GRASS_VIEWS : sp.form == TreeSpecies.Form.GROUND ? GROUND_VIEWS : VIEWS;
+    }
+
+    String noun() {
+        return sp.form == TreeSpecies.Form.GRASS ? "Büschel" : sp.form == TreeSpecies.Form.GROUND ? "Stücke" : "Bäume";
+    }
+
     synchronized TreeMesh mesh(int v, int lod) {
         return meshes.computeIfAbsent(v * 10 + lod, k -> sp.bake(v, lod));
     }
 
-    /** Stufe nach Entfernung in Baumhöhen. */
-    static int autoLod(double d, float h) {
-        double r = d / Math.max(h, 1);
-        return r < 1.4 ? 0 : r < 3.5 ? 1 : r < 9 ? 2 : 3;
+    /** Stufe nach Entfernung in Höhen der Art ({@link TreeSpecies#lodDistance}). */
+    int autoLod(double d, float h) {
+        double r = d / Math.max(h, sp.form == TreeSpecies.Form.TREE ? 1 : 0.05f);
+        float[] g = sp.lodDistance;
+        return r < g[0] ? 0 : r < g[1] ? 1 : r < g[2] ? 2 : 3;
     }
 
     float[] eye(float h) {
-        double r = dist > 0 ? dist : (view == 1 ? 3.2 * h : view == 2 ? 2.4 * h : 1.55 * h);
-        float ty = view == 1 ? h * 0.3f : h * 0.48f;
+        double r;
+        float ty;
+        switch (sp.form) {
+            case GRASS -> {
+                r = dist > 0 ? dist : view == 1 ? 16 * h : view == 2 ? 3.2 * h : 2.6 * h;
+                ty = view == 1 ? h * 2 : h * 0.45f;
+            }
+            case GROUND -> {
+                r = dist > 0 ? dist : view == 1 ? 2.0 * h : 1.6 * h;
+                ty = 0;
+            }
+            default -> {
+                r = dist > 0 ? dist : (view == 1 ? 3.2 * h : view == 2 ? 2.4 * h : 1.55 * h);
+                ty = view == 1 ? h * 0.3f : h * 0.48f;
+            }
+        }
         return new float[]{(float) (Math.cos(yaw) * Math.cos(pitch) * r), (float) (ty + Math.sin(pitch) * r),
                 (float) (Math.sin(yaw) * Math.cos(pitch) * r), ty};
     }
@@ -157,37 +218,48 @@ public final class TreeDemo {
     BufferedImage frame(int w, int h) {
         renderer.resize(w, h);
         TreeSeason.Look look = sp.season.look(day, snow);
-        float th = height(variant);
+        float th = size(variant);
+        if (sp.form == TreeSpecies.Form.GROUND && view == 1 && dist <= 0) pitch = Math.max(pitch, 0.9);
         float[] e = eye(th);
         renderer.camera(new float[]{e[0], e[1], e[2]}, new float[]{0, e[3], 0}, 45);
         List<Placed> trees = scene();
-        float[] blobs = new float[trees.size() * 4];
+        boolean many = trees.size() > 60;              // Wiese: keine Schattenflecken, Ausdünnen in der Ferne
+        float[] blobs = new float[many || sp.form == TreeSpecies.Form.GROUND ? 0 : trees.size() * 4];
         int tris = 0;
         int[] perLod = new int[TreeLod.LEVELS];
         List<Runnable> draws = new ArrayList<>();
         for (int i = 0; i < trees.size(); i++) {
             Placed p = trees.get(i);
             TreeAsset a = sp.load(p.variant);
-            float hh = height(p.variant) * p.scale;
-            double d = Math.hypot(Math.hypot(e[0] - p.x, e[2] - p.z), e[1] - hh * 0.5);
+            float hh = (sp.form == TreeSpecies.Form.GROUND ? size(p.variant) : height(p.variant)) * p.scale;
+            double d = Math.hypot(Math.hypot(e[0] - p.x, e[2] - p.z), e[1] - p.y - hh * 0.5);
+            double rel = d / Math.max(hh, 0.05f);
+            if (many && rel > sp.maxDistance) continue;
+            if (many && rel > sp.fadeDistance && TreeBaker.hash(i, 97) < (rel - sp.fadeDistance) / (sp.maxDistance - sp.fadeDistance)) continue;
             int lod = p.fixedLod >= 0 ? p.fixedLod : autoLod(d, hh);
             TreeMesh m = mesh(p.variant, lod);
             perLod[lod]++;
             tris += m.triangles;
-            blobs[i * 4] = p.x;
-            blobs[i * 4 + 1] = p.z;
-            blobs[i * 4 + 2] = look.bare() ? m.radius * 0.35f * p.scale : m.radius * 0.75f * p.scale;
-            blobs[i * 4 + 3] = m.height * 0.6f * p.scale;
+            if (blobs.length > 0) {
+                blobs[i * 4] = p.x;
+                blobs[i * 4 + 1] = p.z;
+                blobs[i * 4 + 2] = look.bare() ? m.radius * 0.35f * p.scale : m.radius * 0.75f * p.scale;
+                blobs[i * 4 + 3] = m.height * 0.6f * p.scale;
+            }
             float[] pos = new float[m.vertices * 3];
-            wind.displace(m, sp, a.gustAttenuation, time, p.x, 0, p.z, p.yaw, pos);
-            draws.add(() -> renderer.tree(m, pos, sp, a, look, p.x, 0, p.z, p.yaw, p.scale));
+            wind.displace(m, sp, a.gustAttenuation, time, p.x, p.y, p.z, p.yaw, pos);
+            draws.add(() -> renderer.tree(m, pos, sp, a, look, p.x, p.y, p.z, p.yaw, p.scale));
         }
         renderer.shadows(blobs);
         renderer.clear();
-        renderer.ground(0, 0, view == 1 ? 260 : 120, new float[]{0.045f, 0.07f, 0.025f}, snow);
+        renderer.groundTexture(groundTexture, groundTileX, groundTileZ);
+        if (sp.form != TreeSpecies.Form.GROUND)
+            renderer.ground(0, 0, sp.form == TreeSpecies.Form.GRASS ? Math.max(60, th * 400) : view == 1 ? 260 : 120,
+                    new float[]{0.045f, 0.07f, 0.025f}, snow);
         for (Runnable r : draws) r.run();
-        status = String.format("%s · %s · %d Bäume · %,d Dreiecke · Stufen %d/%d/%d/%d · Wind %.0f m/s",
-                sp.name, sp.variantNames[variant], trees.size(), tris, perLod[0], perLod[1], perLod[2], perLod[3], wind.speed);
+        int count = perLod[0] + perLod[1] + perLod[2] + perLod[3];
+        status = String.format("%s · %s · %d %s · %,d Dreiecke · Stufen %d/%d/%d/%d · Wind %.0f m/s",
+                sp.name, sp.variantNames[variant], count, noun(), tris, perLod[0], perLod[1], perLod[2], perLod[3], wind.speed);
         return renderer.finish();
     }
 
@@ -199,7 +271,7 @@ public final class TreeDemo {
     JPanel side;
 
     void open() {
-        FFrame f = new FFrame(sp.name + " – Vorschau des Pakets com.dan.tree");
+        FFrame f = new FFrame(sp.name + " – Vorschau des Pakets " + sp.owner.getPackageName());
         JPanel root = f.getComponentPane();
         root.setLayout(new BorderLayout());
         root.setBackground(BG);
@@ -283,7 +355,7 @@ public final class TreeDemo {
         side.setPreferredSize(new Dimension(290, 10));
 
         head(sp.name + " (" + sp.latin + ")");
-        FComboBox views = new FComboBox(VIEWS);
+        FComboBox views = new FComboBox(views());
         views.setSelectedIndex(view);
         views.addActionListener(e -> { view = views.getSelectedIndex(); dist = -1; yaw = defaultYaw(view); });
         add(label("Ansicht"));

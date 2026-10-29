@@ -31,7 +31,25 @@ public final class TreeSpecies {
     /** Biegsamkeit: Stamm, Äste, Zittern der Blätter (1 = mittel) */
     public float flexTrunk = 1, flexBranch = 1, flutter = 1;
 
-    private final TreeAsset[] cache;
+    /** Was es ist: Baum oder Strauch, Gras (Büschel, dicht gestreut), Boden (statisches Gelände, bewegt sich nicht) */
+    public enum Form { TREE, GRASS, GROUND }
+
+    public Form form = Form.TREE;
+
+    /**
+     * Eigene Stufen aus dem Asset (etwa Megascans LOD0, LOD1, …): je Variante die Ressourcen der Stufen 0, 1, …;
+     * null = alle Stufen aus einer Datei mit {@link TreeLod#of}. Stufen ohne eigene Datei nehmen die letzte
+     * und dünnen sie mit {@link #lodKeep} aus.
+     */
+    public String[][] lods;
+    /** Anteil der Karten je Stufe, wenn eine Stufe keine eigene Datei hat */
+    public float[] lodKeep = {1, 0.35f, 0.12f, 0.04f};
+    /** Grenzen der Stufen 0, 1, 2 in Höhen der Art, für {@code gl/TreeGl} und die Demos */
+    public float[] lodDistance = {1.4f, 3.5f, 14f};
+    /** ab dieser Entfernung (Höhen) dünnt {@code gl/TreeGl} aus, bis sie bei {@link #maxDistance} ganz wegfallen (Gras) */
+    public float fadeDistance = Float.MAX_VALUE, maxDistance = Float.MAX_VALUE;
+
+    private final Map<String, TreeAsset> assets = new HashMap<>();
     private final Map<String, BufferedImage> textures = new HashMap<>();
 
     public TreeSpecies(String name, String latin, Class<?> owner, String... variants) {
@@ -41,15 +59,24 @@ public final class TreeSpecies {
         this.variants = variants;
         this.variantNames = new String[variants.length];
         for (int i = 0; i < variants.length; i++) variantNames[i] = String.valueOf((char) ('A' + i));
-        this.cache = new TreeAsset[variants.length];
     }
 
     public int variantCount() { return variants.length; }
 
-    /** Lädt die Variante (einmal, danach aus dem Zwischenspeicher). */
-    public synchronized TreeAsset load(int variant) {
-        if (cache[variant] == null) cache[variant] = TreeAsset.load(owner, variants[variant]);
-        return cache[variant];
+    /** Lädt die Variante (Stufe 0; einmal, danach aus dem Zwischenspeicher). */
+    public TreeAsset load(int variant) {
+        return resource(lods != null ? lods[variant][0] : variants[variant]);
+    }
+
+    /** Asset der Stufe: eigene Datei, wenn {@link #lods} eine hat, sonst die letzte vorhandene. */
+    public TreeAsset load(int variant, int level) {
+        if (lods == null) return load(variant);
+        String[] l = lods[variant];
+        return resource(l[Math.min(level, l.length - 1)]);
+    }
+
+    private synchronized TreeAsset resource(String name) {
+        return assets.computeIfAbsent(name, n -> TreeAsset.load(owner, n));
     }
 
     /** Textur neben {@link #owner} (Name aus {@link TreeAsset#barkTexture} / {@link TreeAsset#leafTexture}), oder null. */
@@ -89,8 +116,18 @@ public final class TreeSpecies {
         return TreeBaker.bake(load(variant), lod);
     }
 
+    /** Netz einer Variante in Stufe 0..3; mit {@link #lods} die Datei der Stufe, sonst {@link TreeLod#of}. */
     public TreeMesh bake(int variant, int level) {
-        return bake(variant, TreeLod.of(level));
+        if (lods == null) return bake(variant, TreeLod.of(level));
+        int have = lods[variant].length;
+        TreeLod l = TreeLod.of(0);
+        l.level = level;
+        if (level >= have) {
+            l.leafKeep = lodKeep[Math.min(level - have + 1, lodKeep.length - 1)];
+            l.clusterCells = TreeLod.of(level).clusterCells;
+            l.trunkOriginal = false;
+        }
+        return TreeBaker.bake(load(variant, level), l);
     }
 
     @Override

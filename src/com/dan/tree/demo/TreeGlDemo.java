@@ -63,17 +63,45 @@ public final class TreeGlDemo implements GLEventListener {
 
     int groundProg, groundVao;
 
+    /** Optional: Bodentextur (sRGB) und Kachelgröße in m */
+    public BufferedImage groundTexture;
+    public float groundTileX = 2, groundTileZ = 2;
+    int groundTex;
+
     TreeGlDemo(TreeSpecies sp, int count, float area) {
+        this(sp, count, area, null);
+    }
+
+    /**
+     * Bestand einer Art. Mit {@code layout} (etwa eine Wiese aus {@code com.dan.grass.GrassField}) kommen die Stücke
+     * aus der Anordnung im Kreis vom Radius area/2, sonst count Stück zufällig mit Mindestabstand.
+     */
+    public TreeGlDemo(TreeSpecies sp, int count, float area, TreeDemo.Layout layout) {
         this.sp = sp;
-        float hmax = 1;
+        float hmax = sp.form == TreeSpecies.Form.TREE ? 1 : 0.05f;
         trees = new TreeGl(sp);
         Random r = new Random(7);
         List<float[]> pts = new ArrayList<>();
         for (int v = 0; v < sp.variantCount(); v++) hmax = Math.max(hmax, trees.height(v));
+        if (sp.form == TreeSpecies.Form.GROUND) hmax = Math.max(hmax, sp.bake(0, 3).radius);
         treeHeight = hmax;
-        this.area = area > 0 ? area : Math.max(30, 14 * hmax);
+        float auto = sp.form == TreeSpecies.Form.GRASS ? Math.max(20, Math.min(70, Math.min(120, 1.6f * sp.maxDistance) * hmax)) : Math.max(30, 14 * hmax);
+        this.area = area > 0 ? area : auto;
         area = this.area;
-        dist = 3.7 * hmax;
+        dist = sp.form == TreeSpecies.Form.GRASS ? 6 * hmax : sp.form == TreeSpecies.Form.GROUND ? 1.6 * hmax : 3.7 * hmax;
+        if (sp.form == TreeSpecies.Form.GROUND) {
+            pitch = 0.5;
+            trees.add(0, 0, 0, 0, 0, 1);
+            wind.speed = 0;
+            return;
+        }
+        if (layout != null) {
+            for (TreeDemo.Placed p : layout.place(sp.variantCount(), area / 2))
+                trees.add(p.variant(), p.x(), p.y(), p.z(), p.yaw(), p.scale());
+            wind.speed = 7;
+            wind.gustiness = 0.5f;
+            return;
+        }
         float minGap = Math.max(1.2f, 0.43f * hmax);
         int tries = 0;
         while (pts.size() < count && tries++ < count * 60) {
@@ -88,24 +116,38 @@ public final class TreeGlDemo implements GLEventListener {
         wind.gustiness = 0.5f;
     }
 
+    /** Erzeugt die Demo aus Anzahl und Fläche (die ersten beiden Zahlen der Befehlszeile). */
+    @FunctionalInterface
+    public interface Factory {
+        TreeGlDemo create(int count, float area);
+    }
+
     public static void run(TreeSpecies sp, String[] args) throws Exception {
+        run((count, area) -> new TreeGlDemo(sp, count, area), args, 150);
+    }
+
+    /**
+     * Fenster: [anzahl] [fläche m] [tag]; Bild: --bild datei.png [anzahl] [fläche m] [tag] [wind m/s] [breite] [höhe].
+     * Die Anzahl ist bei Gras die Dichte (Büschel je m²).
+     */
+    public static void run(Factory f, String[] args, int defaultCount) throws Exception {
         if (args.length > 0 && args[0].equals("--bild")) {
-            image(sp, args);
+            image(f, args, defaultCount);
             return;
         }
-        int count = args.length > 0 ? Integer.parseInt(args[0]) : 150;
+        int count = args.length > 0 ? Integer.parseInt(args[0]) : defaultCount;
         float area = args.length > 1 ? Float.parseFloat(args[1]) : -1;
-        TreeGlDemo d = new TreeGlDemo(sp, count, area);
+        TreeGlDemo d = f.create(count, area);
         if (args.length > 2) d.day = Integer.parseInt(args[2]);
         SwingUtilities.invokeLater(d::open);
     }
 
     /** Ein Bild ohne Fenster (wie ForestGlDemo --bild); wartet, bis alle Stufen hochgeladen sind. */
-    static void image(TreeSpecies sp, String[] a) throws Exception {
+    static void image(Factory f, String[] a, int defaultCount) throws Exception {
         String file = a.length > 1 ? a[1] : "bestand.png";
-        int count = a.length > 2 ? Integer.parseInt(a[2]) : 150;
+        int count = a.length > 2 ? Integer.parseInt(a[2]) : defaultCount;
         float area = a.length > 3 ? Float.parseFloat(a[3]) : -1;
-        TreeGlDemo d = new TreeGlDemo(sp, count, area);
+        TreeGlDemo d = f.create(count, area);
         if (a.length > 4) d.day = Integer.parseInt(a[4]);
         if (a.length > 5) d.wind.speed = Float.parseFloat(a[5]);
         int w = a.length > 6 ? Integer.parseInt(a[6]) : 1280, h = a.length > 7 ? Integer.parseInt(a[7]) : 800;
@@ -126,7 +168,7 @@ public final class TreeGlDemo implements GLEventListener {
             return true;
         });
         ImageIO.write(d.shown, "png", new File(file));
-        System.out.printf("%s geschrieben: %d Bäume, %,d Dreiecke, %s%n", file, d.trees.trees().size(), d.trees.triangles(),
+        System.out.printf("%s geschrieben: %d Stück, %,d Dreiecke, %s%n", file, d.trees.trees().size(), d.trees.triangles(),
                 d.error == null ? "ohne Fehler" : "Fehler: " + d.error);
         drawable.destroy();
         System.exit(d.error == null ? 0 : 1);
@@ -171,7 +213,7 @@ public final class TreeGlDemo implements GLEventListener {
             }
 
             @Override public void mouseWheelMoved(MouseWheelEvent e) {
-                dist = Math.max(0.3 * treeHeight, Math.min(100 * treeHeight, dist * Math.pow(1.12, e.getWheelRotation())));
+                dist = Math.max(0.3 * treeHeight, Math.min(300 * treeHeight, dist * Math.pow(1.12, e.getWheelRotation())));
             }
         };
         view.addMouseListener(mouse);
@@ -302,18 +344,22 @@ public final class TreeGlDemo implements GLEventListener {
     static final String GROUND_VS = """
             layout(location = 0) in vec2 aXZ;
             uniform mat4 uVP;
+            uniform float uY;
             out vec3 vWorld;
-            void main() { vWorld = vec3(aXZ.x, 0.0, aXZ.y); gl_Position = uVP * vec4(vWorld, 1.0); }
+            void main() { vWorld = vec3(aXZ.x, uY, aXZ.y); gl_Position = uVP * vec4(vWorld, 1.0); }
             """;
     static final String GROUND_FS = """
             in vec3 vWorld;
             uniform vec3 uCam, uSunDir, uSunColor, uSkyColor;
             uniform vec4 uFog;
             uniform float uSnow;
+            uniform sampler2D uTex;
+            uniform vec3 uTile;                 // Kachel x, z (m), 1 = mit Textur
             out vec4 fragColor;
             void main() {
                 float v = 0.92 + 0.08 * sin(vWorld.x * 0.37 + sin(vWorld.z * 0.23) * 2.0) * sin(vWorld.z * 0.31 + vWorld.x * 0.11);
-                vec3 base = mix(vec3(0.045, 0.07, 0.025) * v, vec3(0.8), uSnow);
+                vec3 albedo = uTile.z > 0.5 ? texture(uTex, vWorld.xz / uTile.xy).rgb * 0.8 : vec3(0.045, 0.07, 0.025) * v;
+                vec3 base = mix(albedo, vec3(0.8), uSnow);
                 vec3 c = base * (uSunColor * max(uSunDir.y, 0.0) + uSkyColor * 0.9);
                 c = mix(c, uFog.rgb, 1.0 - exp(-length(uCam - vWorld) / uFog.w));
                 c = c / (1.0 + c * 0.25);
@@ -359,6 +405,7 @@ public final class TreeGlDemo implements GLEventListener {
         gl.glEnableVertexAttribArray(0);
         gl.glVertexAttribPointer(0, 2, GL.GL_FLOAT, false, 8, 0L);
         gl.glBindVertexArray(0);
+        if (groundTexture != null) groundTex = TreeGl.uploadTexture(gl, groundTexture);
         last = System.nanoTime();
     }
 
@@ -382,9 +429,9 @@ public final class TreeGlDemo implements GLEventListener {
         last = now;
         frameMs = frameMs * 0.9 + dt * 1000 * 0.1;
         if (running) time += dt;
-        float h = trees.height(0) * 0.45f;
+        float h = sp.form == TreeSpecies.Form.GROUND ? 0 : trees.height(0) * (sp.form == TreeSpecies.Form.GRASS ? 1.5f : 0.45f);
         double[] eye = {Math.cos(yaw) * Math.cos(pitch) * dist, h + Math.sin(pitch) * dist, Math.sin(yaw) * Math.cos(pitch) * dist};
-        float[] vp = mul(persp(45, width / (double) Math.max(height, 1), 0.2, 6000), look(eye, new double[]{0, h, 0}));
+        float[] vp = mul(persp(45, width / (double) Math.max(height, 1), Math.max(0.02, treeHeight * 0.04), 6000), look(eye, new double[]{0, h, 0}));
 
         gl.glViewport(0, 0, width, height);
         double[] fog = light.fogColor;
@@ -402,8 +449,13 @@ public final class TreeGlDemo implements GLEventListener {
         gl.glUniform3f(gl.glGetUniformLocation(groundProg, "uSkyColor"), (float) light.skyColor[0], (float) light.skyColor[1], (float) light.skyColor[2]);
         gl.glUniform4f(gl.glGetUniformLocation(groundProg, "uFog"), (float) fog[0], (float) fog[1], (float) fog[2], (float) light.fogDistance);
         gl.glUniform1f(gl.glGetUniformLocation(groundProg, "uSnow"), snow);
+        gl.glUniform1f(gl.glGetUniformLocation(groundProg, "uY"), sp.form == TreeSpecies.Form.GROUND ? -50 : 0);
+        gl.glUniform3f(gl.glGetUniformLocation(groundProg, "uTile"), groundTileX, groundTileZ, groundTex != 0 ? 1 : 0);
+        gl.glUniform1i(gl.glGetUniformLocation(groundProg, "uTex"), 0);
+        gl.glActiveTexture(GL.GL_TEXTURE0);
+        gl.glBindTexture(GL.GL_TEXTURE_2D, groundTex);
         gl.glBindVertexArray(groundVao);
-        gl.glDrawArrays(GL.GL_TRIANGLES, 0, 6);
+        if (sp.form != TreeSpecies.Form.GROUND) gl.glDrawArrays(GL.GL_TRIANGLES, 0, 6);
         gl.glBindVertexArray(0);
 
         trees.setSeason(day, snow);

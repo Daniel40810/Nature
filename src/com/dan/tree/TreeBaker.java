@@ -159,7 +159,8 @@ public final class TreeBaker {
                 tex = uv;
                 nc = n;
             } else {
-                float cell = treeHeight / cells;
+                // Maß: Höhe; bei flachen, breiten Netzen (Gelände) der halbe Durchmesser
+                float cell = Math.max(treeHeight, spread * 0.5f) / cells;
                 java.util.HashMap<Long, Integer> ids = new java.util.HashMap<>();
                 FloatList sum = new FloatList();
                 for (int i = 0; i < n; i++) {
@@ -274,8 +275,14 @@ public final class TreeBaker {
             int n = c.vertices();
             int[] base = new int[cardCount];
             Arrays.fill(base, -1);
+            // Ansatz: bei Bäumen die Ecke nächst der Achse, bei Gras (kein Stamm) die tiefste Ecke des Halms
+            boolean grass = a.trunk.vertices() == 0;
             for (int i = 0; i < n; i++) {
                 int k = cardOf[i];
+                if (grass) {
+                    if (base[k] < 0 || c.pos[i * 3 + 1] < c.pos[base[k] * 3 + 1]) base[k] = i;
+                    continue;
+                }
                 float r = (float) Math.hypot(c.pos[i * 3] - axisX, c.pos[i * 3 + 2] - axisZ);
                 if (base[k] < 0 || r < Math.hypot(c.pos[base[k] * 3] - axisX, c.pos[base[k] * 3 + 2] - axisZ)) base[k] = i;
             }
@@ -285,7 +292,27 @@ public final class TreeBaker {
                 size[k] = Math.max(size[k], len(c.pos, i * 3, c.pos[b * 3], c.pos[b * 3 + 1], c.pos[b * 3 + 2]));
             }
             boolean[] keep = new boolean[cardCount];
-            for (int k = 0; k < cardCount; k++) keep[k] = lod.leafKeep >= 1 || hash(k, 7) < lod.leafKeep;
+            // Gras: hohe Halme bleiben eher (Umriss der Wiese), im Mittel trotzdem der verlangte Anteil
+            float[] top = new float[cardCount];
+            float tallest = 1e-3f;
+            if (grass) {
+                for (int i = 0; i < n; i++) top[cardOf[i]] = Math.max(top[cardOf[i]], c.pos[i * 3 + 1]);
+                for (float t : top) tallest = Math.max(tallest, t);
+            }
+            if (grass && lod.leafKeep < 1) {
+                // die höchsten Halme behalten (mit etwas Zufall), damit die Wiese in der Ferne nicht niedriger wird
+                Integer[] order = new Integer[cardCount];
+                float[] score = new float[cardCount];
+                for (int k = 0; k < cardCount; k++) {
+                    order[k] = k;
+                    score[k] = Math.max(0, top[k]) / tallest + 0.25f * hash(k, 7);
+                }
+                Arrays.sort(order, (p, q) -> Float.compare(score[q], score[p]));
+                int n0 = Math.max(1, Math.round(lod.leafKeep * cardCount));
+                for (int r = 0; r < n0; r++) keep[order[r]] = true;
+            } else {
+                for (int k = 0; k < cardCount; k++) keep[k] = lod.leafKeep >= 1 || hash(k, 7) < lod.leafKeep;
+            }
             float grow = (float) Math.sqrt(1 / Math.max(lod.leafKeep, 1e-3f));
             float crownY = treeHeight * 0.6f;
             int[] map = new int[n];
@@ -293,10 +320,12 @@ public final class TreeBaker {
                 int k = cardOf[i];
                 if (!keep[k]) { map[i] = -1; continue; }
                 float[] q = cen[k];
-                float x = q[0] + (c.pos[i * 3] - q[0]) * grow, y = q[1] + (c.pos[i * 3 + 1] - q[1]) * grow,
+                // Gras wird beim Ausdünnen nur breiter, nicht höher
+                float gy = grass ? 1 : grow;
+                float x = q[0] + (c.pos[i * 3] - q[0]) * grow, y = q[1] + (c.pos[i * 3 + 1] - q[1]) * gy,
                         z = q[2] + (c.pos[i * 3 + 2] - q[2]) * grow;
                 int b = base[k];
-                float bx = q[0] + (c.pos[b * 3] - q[0]) * grow, by = q[1] + (c.pos[b * 3 + 1] - q[1]) * grow,
+                float bx = q[0] + (c.pos[b * 3] - q[0]) * grow, by = q[1] + (c.pos[b * 3 + 1] - q[1]) * gy,
                         bz = q[2] + (c.pos[b * 3 + 2] - q[2]) * grow;
                 float d = (float) Math.sqrt(sq3(x - bx, y - by, z - bz));
                 float sz = Math.max(size[k] * grow, 1e-3f);

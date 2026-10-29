@@ -15,7 +15,14 @@ Arten bisher:
 | `com.dan.tree.mobiletree` | Laubbaum für schwache Hardware (Art nicht angegeben) | FBX + Texturen | 1, 24 m | 1 900 |
 | `com.dan.tree.supertree` | Laubbaum mit 400 Dreiecken (Art nicht angegeben) | FBX + Texturen | 1, 25 m | 410 |
 
-Alle Assets werden mit `tools/tree/convert_all.sh` aus `Assets/Trees/*.zip` neu erzeugt. Gleiche Eingabe ergibt die gleiche Datei.
+Alle Assets werden mit `tools/tree/convert_all.sh` aus `Assets/Trees/*.zip` (und für `com.dan.grass` aus `Assets/Grass/*.zip`) neu erzeugt. Gleiche Eingabe ergibt die gleiche Datei.
+
+Gras und Gelände liegen in `com.dan.grass`, das auf diesem Kern aufbaut. Dafür kennt der Kern:
+- **`TreeSpecies.form`:** `TREE`, `GRASS` oder `GROUND`.
+- **`TreeSpecies.lods`:** eigene Stufen aus dem Asset, je Stufe eine Datei; fehlende Stufen werden mit `lodKeep` ausgedünnt.
+- **Entfernungen je Art:** `lodDistance`, `fadeDistance`, `maxDistance`.
+- **`TreeSeason.persistent`:** Laub, das bleibt und sich nur färbt.
+- **Demos:** einen Haken für die Anordnung (`TreeDemo.Layout`) und eine Bodentextur.
 
 ## Weg eines Baums
 
