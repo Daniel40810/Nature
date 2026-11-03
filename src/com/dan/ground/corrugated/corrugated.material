@@ -1,0 +1,10 @@
+# aus military_trenches_metal_corrugated_02_yd0kejgga_4k.zip (tools/ground/megascans_surface.py)
+name=Wellblech rostig
+tileX=2
+tileZ=2
+relief=0.123
+heightMid=0.4702
+color=0.1629,0.0891,0.0544
+albedo=corrugated_albedo.jpg
+normal=corrugated_normal.jpg
+height=corrugated_height.png

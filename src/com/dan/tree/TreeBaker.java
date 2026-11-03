@@ -199,10 +199,12 @@ public final class TreeBaker {
                 }
             }
             int base = nv;
+            // Netz ohne Laub (Gelände, Gegenstand): keine Helligkeit je Punkt, sonst sprenkelt die Textur
+            boolean bare = a.cards == null && a.twigs.length == 0;
             for (int c = 0; c < nc; c++) {
                 float x = pos[c * 3], y = pos[c * 3 + 1], z = pos[c * 3 + 2];
                 vertex(x, y, z, nrm[c * 3], nrm[c * 3 + 1], nrm[c * 3 + 2], synthLimb(x, z), 0, 0,
-                        synthPhase(x, z), 0, 0, hash(c, 3), tex != null ? tex[c * 2] : 0, tex != null ? tex[c * 2 + 1] : 0);
+                        synthPhase(x, z), 0, 0, bare ? 0.5f : hash(c, 3), tex != null ? tex[c * 2] : 0, tex != null ? tex[c * 2 + 1] : 0);
             }
             java.util.HashSet<Long> seen = new java.util.HashSet<>();
             for (int i = 0; i < m.tri.length; i += 3) {

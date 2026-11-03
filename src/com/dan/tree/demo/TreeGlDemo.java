@@ -38,13 +38,16 @@ import java.util.Random;
  * <pre>
  * Fenster:  …GlDemo [bäume] [fläche m] [tag]
  * Bild:     …GlDemo --bild datei.png [bäume] [fläche m] [tag] [wind m/s] [breite] [höhe]
+ * Gelände (Form GROUND): statt der Anzahl die Variante (0, 1, …)
  * </pre>
  */
 public final class TreeGlDemo implements GLEventListener {
 
     final TreeSpecies sp;
     final TreeGl trees;
-    final TreeWind wind = new TreeWind();
+    /** Weitere Arten in derselben Szene (etwa Sandsäcke und Gras am Graben), mit eigenen Stücken */
+    public final List<TreeGl> extras = new ArrayList<>();
+    public final TreeWind wind = new TreeWind();
     final TreeGl.Light light = new TreeGl.Light();
     final float area;
     /** größte Höhe der Varianten: Kamera, Abstand der Bäume und Fläche richten sich danach */
@@ -52,7 +55,8 @@ public final class TreeGlDemo implements GLEventListener {
     volatile int day = 180;
     volatile float snow;
     volatile boolean running = true;
-    volatile double yaw = 0.7, pitch = 0.18, dist;
+    /** Kamera: Drehung um die Hochachse und Neigung (rad), Abstand (m) */
+    public volatile double yaw = 0.7, pitch = 0.18, dist;
     double time;
     long last;
     double frameMs;
@@ -83,7 +87,9 @@ public final class TreeGlDemo implements GLEventListener {
         Random r = new Random(7);
         List<float[]> pts = new ArrayList<>();
         for (int v = 0; v < sp.variantCount(); v++) hmax = Math.max(hmax, trees.height(v));
-        if (sp.form == TreeSpecies.Form.GROUND) hmax = Math.max(hmax, sp.bake(0, 3).radius);
+        // Gelände: ein Stück, die Anzahl wählt die Variante; Kamera nach ihrem halben Durchmesser
+        int groundVariant = Math.max(0, Math.min(count, sp.variantCount() - 1));
+        if (sp.form == TreeSpecies.Form.GROUND) hmax = Math.max(0.3f, sp.bake(groundVariant, 3).radius);
         treeHeight = hmax;
         float auto = sp.form == TreeSpecies.Form.GRASS ? Math.max(20, Math.min(70, Math.min(120, 1.6f * sp.maxDistance) * hmax)) : Math.max(30, 14 * hmax);
         this.area = area > 0 ? area : auto;
@@ -91,7 +97,7 @@ public final class TreeGlDemo implements GLEventListener {
         dist = sp.form == TreeSpecies.Form.GRASS ? 6 * hmax : sp.form == TreeSpecies.Form.GROUND ? 1.6 * hmax : 3.7 * hmax;
         if (sp.form == TreeSpecies.Form.GROUND) {
             pitch = 0.5;
-            trees.add(0, 0, 0, 0, 0, 1);
+            trees.add(groundVariant, 0, 0, 0, 0, 1);
             wind.speed = 0;
             return;
         }
@@ -158,7 +164,7 @@ public final class TreeGlDemo implements GLEventListener {
         drawable.addGLEventListener(d);
         long t0 = System.nanoTime();
         drawable.display();
-        while (!d.trees.ready() && d.error == null && System.nanoTime() - t0 < 120_000_000_000L) {
+        while (!(d.trees.ready() && d.extras.stream().allMatch(TreeGl::ready)) && d.error == null && System.nanoTime() - t0 < 120_000_000_000L) {
             Thread.sleep(50);
             drawable.display();
         }
@@ -168,7 +174,7 @@ public final class TreeGlDemo implements GLEventListener {
             return true;
         });
         ImageIO.write(d.shown, "png", new File(file));
-        System.out.printf("%s geschrieben: %d Stück, %,d Dreiecke, %s%n", file, d.trees.trees().size(), d.trees.triangles(),
+        System.out.printf("%s geschrieben: %d Stück, %,d Dreiecke, %s%n", file, d.pieces(), d.triangles(),
                 d.error == null ? "ohne Fehler" : "Fehler: " + d.error);
         drawable.destroy();
         System.exit(d.error == null ? 0 : 1);
@@ -392,6 +398,7 @@ public final class TreeGlDemo implements GLEventListener {
 
     void setup(GL4 gl) {
         trees.init(gl);
+        for (TreeGl x : extras) x.init(gl);
         groundProg = shaderProgram(gl, GROUND_VS, GROUND_FS);
         int[] ids = new int[1];
         gl.glGenVertexArrays(1, ids, 0);
@@ -465,13 +472,20 @@ public final class TreeGlDemo implements GLEventListener {
         view.viewProj = vp;
         view.eye = eye;
         trees.draw(gl, view, light, time);
+        for (TreeGl x : extras) {
+            x.setSeason(day, snow);
+            x.setWind(wind);
+            x.update(gl, eye);
+            x.draw(gl, view, light, time);
+            if (x.error() != null && error == null) fail(new IllegalStateException(x.error()));
+        }
 
         if (trees.error() != null && error == null) fail(new IllegalStateException(trees.error()));
         int glErr = gl.glGetError();
         if (glErr != GL.GL_NO_ERROR && error == null) fail(new IllegalStateException(String.format("OpenGL-Fehler 0x%04X", glErr)));
         if (info == null || error != null) return;
-        String s = String.format("%d Bäume · %,d Dreiecke · %.1f ms je Bild%s", trees.trees().size(), trees.triangles(), frameMs,
-                trees.ready() ? "" : " · backe Stufen …");
+        String s = String.format("%d Stück · %,d Dreiecke · %.1f ms je Bild%s", pieces(), triangles(), frameMs,
+                trees.ready() && extras.stream().allMatch(TreeGl::ready) ? "" : " · backe Stufen …");
         SwingUtilities.invokeLater(() -> info.setText(s));
     }
 
@@ -485,7 +499,22 @@ public final class TreeGlDemo implements GLEventListener {
     public void dispose(GLAutoDrawable d) {
         GL4 gl = d.getGL().getGL4();
         trees.dispose(gl);
+        for (TreeGl x : extras) x.dispose(gl);
         gl.glDeleteProgram(groundProg);
+    }
+
+    /** Stücke aller Arten der Szene. */
+    int pieces() {
+        int n = trees.trees().size();
+        for (TreeGl x : extras) n += x.trees().size();
+        return n;
+    }
+
+    /** Dreiecke aller Arten im letzten Bild. */
+    long triangles() {
+        long n = trees.triangles();
+        for (TreeGl x : extras) n += x.triangles();
+        return n;
     }
 
     static float tone(double c) {

@@ -1,0 +1,10 @@
+# aus military_trenches_detail_sandbag_canvas_ydzoagbga_4k.zip (tools/ground/megascans_surface.py)
+name=Sandsack-Leinen
+tileX=1
+tileZ=1
+relief=0.045
+heightMid=0.6998
+color=0.3690,0.2595,0.1686
+albedo=sandbag_albedo.jpg
+normal=sandbag_normal.jpg
+height=sandbag_height.png

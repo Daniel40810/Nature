@@ -8,6 +8,7 @@ import java.io.UncheckedIOException;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.Function;
 
 /**
  * Eine Baumart aus Unreal-Assets: Varianten als {@code .dtree}-Ressourcen neben {@link #owner},
@@ -31,8 +32,11 @@ public final class TreeSpecies {
     /** Biegsamkeit: Stamm, Äste, Zittern der Blätter (1 = mittel) */
     public float flexTrunk = 1, flexBranch = 1, flutter = 1;
 
-    /** Was es ist: Baum oder Strauch, Gras (Büschel, dicht gestreut), Boden (statisches Gelände, bewegt sich nicht) */
-    public enum Form { TREE, GRASS, GROUND }
+    /**
+     * Was es ist: Baum oder Strauch, Gras (Büschel, dicht gestreut), Boden (statisches Gelände, bewegt sich nicht),
+     * Gegenstand (statisch, steht auf dem Boden: Sandsack, Blech, Fels)
+     */
+    public enum Form { TREE, GRASS, GROUND, OBJECT }
 
     public Form form = Form.TREE;
 
@@ -48,6 +52,14 @@ public final class TreeSpecies {
     public float[] lodDistance = {1.4f, 3.5f, 14f};
     /** ab dieser Entfernung (Höhen) dünnt {@code gl/TreeGl} aus, bis sie bei {@link #maxDistance} ganz wegfallen (Gras) */
     public float fadeDistance = Float.MAX_VALUE, maxDistance = Float.MAX_VALUE;
+
+    /**
+     * Varianten aus Code statt aus Dateien: liefert zum Namen einer Ressource (aus {@link #variants} bzw.
+     * {@link #lods}) das Asset, oder null, dann wird die Datei neben {@link #owner} gelesen.
+     */
+    public Function<String, TreeAsset> generator;
+    /** Normal-Map (OpenGL-Format) je Rindentextur: Name der Rindentextur → Name der Normal-Map; nur {@code gl/TreeGl} nutzt sie */
+    public final Map<String, String> barkNormal = new HashMap<>();
 
     private final Map<String, TreeAsset> assets = new HashMap<>();
     private final Map<String, BufferedImage> textures = new HashMap<>();
@@ -76,7 +88,18 @@ public final class TreeSpecies {
     }
 
     private synchronized TreeAsset resource(String name) {
-        return assets.computeIfAbsent(name, n -> TreeAsset.load(owner, n));
+        TreeAsset a = assets.get(name);
+        if (a == null) {
+            a = generator != null ? generator.apply(name) : null;
+            if (a == null) a = TreeAsset.load(owner, name);
+            assets.put(name, a);
+        }
+        return a;
+    }
+
+    /** Textur unter diesem Namen bereitstellen (etwa ein im Code gebackenes Bild), statt sie neben {@link #owner} zu suchen. */
+    public synchronized void putTexture(String name, BufferedImage img) {
+        textures.put(name, img);
     }
 
     /** Textur neben {@link #owner} (Name aus {@link TreeAsset#barkTexture} / {@link TreeAsset#leafTexture}), oder null. */

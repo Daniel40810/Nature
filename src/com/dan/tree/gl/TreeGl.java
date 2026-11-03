@@ -95,13 +95,16 @@ public final class TreeGl {
         nv = species.variantCount();
         slots = new Slot[nv][TreeLod.LEVELS];
         barkTex = new int[nv];
+        barkNrm = new int[nv];
         leafTex = new int[nv];
         heights = new float[nv];
         for (int v = 0; v < nv; v++) {
             for (int l = 0; l < TreeLod.LEVELS; l++) slots[v][l] = new Slot();
             TreeAsset a = species.load(v);
-            // Maß für die Stufen: Höhe, bei Gelände der halbe Durchmesser
-            heights[v] = species.form == TreeSpecies.Form.GROUND ? species.bake(v, TreeLod.LEVELS - 1).radius : a.height();
+            // Maß für die Stufen: Höhe, bei Gelände der halbe Durchmesser, bei Gegenständen das größere von beiden
+            if (species.form == TreeSpecies.Form.GROUND) heights[v] = species.bake(v, TreeLod.LEVELS - 1).radius;
+            else if (species.form == TreeSpecies.Form.OBJECT) heights[v] = Math.max(a.height(), species.bake(v, TreeLod.LEVELS - 1).radius);
+            else heights[v] = a.height();
         }
         look = species.season.look(180, 0);
     }
@@ -150,10 +153,16 @@ public final class TreeGl {
             TreeAsset a = species.load(v);
             barkTex[v] = texture(gl, a.barkTexture, false);
             leafTex[v] = texture(gl, a.leafTexture, true);
+            String nrm = species.barkNormal.get(a.barkTexture);
+            if (nrm != null && barkTex[v] != 0) {
+                Integer known = texIds.get(nrm);
+                if (known == null) texIds.put(nrm, known = uploadTexture(gl, species.texture(nrm), false));
+                barkNrm[v] = known;
+            }
         }
     }
 
-    private final int[] barkTex, leafTex;
+    private final int[] barkTex, barkNrm, leafTex;
     private final java.util.Map<String, Integer> texIds = new java.util.HashMap<>();
 
     /** Textur aus der Art hochladen (sRGB, Mipmaps, wiederholt); 0, wenn keine. */
@@ -168,6 +177,11 @@ public final class TreeGl {
 
     /** Bild als sRGB-Textur mit Mipmaps hochladen, wiederholt; liefert die Kennung. */
     public static int uploadTexture(GL4 gl, java.awt.image.BufferedImage img) {
+        return uploadTexture(gl, img, true);
+    }
+
+    /** Bild mit Mipmaps hochladen, wiederholt; srgb false für Daten (Normal-Maps). Liefert die Kennung. */
+    public static int uploadTexture(GL4 gl, java.awt.image.BufferedImage img, boolean srgb) {
         int w = img.getWidth(), h = img.getHeight();
         int[] px = img.getRGB(0, 0, w, h, null, 0, w);
         java.nio.ByteBuffer buf = Buffers.newDirectByteBuffer(w * h * 4);
@@ -180,7 +194,7 @@ public final class TreeGl {
         gl.glGenTextures(1, id, 0);
         gl.glBindTexture(GL.GL_TEXTURE_2D, id[0]);
         gl.glPixelStorei(GL.GL_UNPACK_ALIGNMENT, 4);
-        gl.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_SRGB8_ALPHA8, w, h, 0, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, buf);
+        gl.glTexImage2D(GL.GL_TEXTURE_2D, 0, srgb ? GL.GL_SRGB8_ALPHA8 : GL.GL_RGBA8, w, h, 0, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, buf);
         gl.glGenerateMipmap(GL.GL_TEXTURE_2D);
         gl.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR_MIPMAP_LINEAR);
         gl.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR);
@@ -356,6 +370,7 @@ public final class TreeGl {
         gl.glUniform3fv(loc(gl, "uLeafRef"), 1, look.reference, 0);
         gl.glUniform1i(loc(gl, "uBarkTex"), 0);
         gl.glUniform1i(loc(gl, "uLeafTex"), 1);
+        gl.glUniform1i(loc(gl, "uBarkNrm"), 2);
         double[] sd = light.sunDir;
         double sl = Math.sqrt(sd[0] * sd[0] + sd[1] * sd[1] + sd[2] * sd[2]);
         gl.glUniform3f(loc(gl, "uSunDir"), (float) (sd[0] / sl), (float) (sd[1] / sl), (float) (sd[2] / sl));
@@ -373,6 +388,9 @@ public final class TreeGl {
                 int v = variantOf(s);
                 boolean tb = s.mesh.barkTextured && barkTex[v] != 0, tl = s.mesh.leafTextured && leafTex[v] != 0;
                 gl.glUniform2i(loc(gl, "uTextured"), tb ? 1 : 0, tl ? 1 : 0);
+                gl.glUniform1i(loc(gl, "uBarkNrmOn"), tb && barkNrm[v] != 0 ? 1 : 0);
+                gl.glActiveTexture(GL.GL_TEXTURE2);
+                gl.glBindTexture(GL.GL_TEXTURE_2D, tb ? barkNrm[v] : 0);
                 gl.glActiveTexture(GL.GL_TEXTURE0);
                 gl.glBindTexture(GL.GL_TEXTURE_2D, tb ? barkTex[v] : 0);
                 gl.glActiveTexture(GL.GL_TEXTURE1);
