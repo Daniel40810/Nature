@@ -1,0 +1,10 @@
+# aus military_trenches_ground_dirt_coarse_01_yd0ldai_4k.zip (tools/ground/megascans_surface.py)
+name=Erde grob
+tileX=2
+tileZ=2
+relief=0.028
+heightMid=0.5616
+color=0.1965,0.1506,0.1126
+albedo=dirtcoarse_albedo.jpg
+normal=dirtcoarse_normal.jpg
+height=dirtcoarse_height.png

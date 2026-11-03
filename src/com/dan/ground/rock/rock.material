@@ -1,0 +1,10 @@
+# aus military_trenches_ground_dirt_rough_02_yd0lacrs_4k.zip (tools/ground/megascans_surface.py)
+name=Gestein (aus Erde rau)
+tileX=1
+tileZ=1
+relief=0.081
+heightMid=0.5143
+color=0.2715,0.2563,0.2373
+albedo=rock_albedo.jpg
+normal=rock_normal.jpg
+height=rock_height.png

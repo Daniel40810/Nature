@@ -102,8 +102,9 @@ public final class TreeCheck {
             int leaves = 0;
             for (TreeAsset.Twig t : a.twigs) leaves += t.leaves();
             check(leaves > 0, "Zweig-Prototypen haben Blätter (" + leaves + ")");
-        } else if (sp.form == TreeSpecies.Form.GROUND) {
-            check(a.trunk.triangles() > 0 && a.trunkUv != null, "Gelände: Netz mit UVs (" + a.trunk.triangles() + " Dreiecke)");
+        } else if (sp.form == TreeSpecies.Form.GROUND || sp.form == TreeSpecies.Form.OBJECT) {
+            check(a.trunk.triangles() > 0 && a.trunkUv != null, (sp.form == TreeSpecies.Form.GROUND ? "Gelände" : "Gegenstand")
+                    + ": Netz mit UVs (" + a.trunk.triangles() + " Dreiecke)");
         } else {
             check(a.cards != null && a.cards.triangles() > 0, "ohne Skelett: Laubkarten vorhanden ("
                     + (a.cards == null ? 0 : a.cards.triangles()) + " Dreiecke)");
@@ -118,6 +119,9 @@ public final class TreeCheck {
         if (sp.form == TreeSpecies.Form.GROUND) {
             float r = sp.bake(v, 3).radius;
             check(r >= minH && r <= maxH, String.format("Halbmesser %.1f m in %.0f … %.0f m", r, minH, maxH));
+        } else if (sp.form == TreeSpecies.Form.OBJECT) {
+            float r = Math.max(h, sp.bake(v, 3).radius);
+            check(r >= minH && r <= maxH, String.format("Größe (Höhe oder Halbmesser) %.2f m in %.2f … %.2f m", r, minH, maxH));
         } else {
             check(h >= minH && h <= maxH, String.format("Höhe %.2f m in %.2f … %.2f m", h, minH, maxH));
         }
@@ -145,12 +149,13 @@ public final class TreeCheck {
         TreeMesh again = sp.bake(v, 1);
         check(Arrays.equals(again.v, m[1].v) && Arrays.equals(again.tri, m[1].tri), "Backen ist reproduzierbar");
 
-        if (sp.form == TreeSpecies.Form.GROUND) {
+        if (sp.form == TreeSpecies.Form.GROUND || sp.form == TreeSpecies.Form.OBJECT) {
             TreeWind w = new TreeWind();
             w.speed = 25;
             float[] out = new float[m[1].vertices * 3];
             w.displace(m[1], sp, a.gustAttenuation, 3.3f, 0, 0, 0, 0, out);
-            check(Math.max(maxShift(m[1], out, -1e9f, 1e9f), maxLeafShift(m[1], out)) < 1e-6f, "Gelände bewegt sich im Sturm nicht");
+            check(Math.max(maxShift(m[1], out, -1e9f, 1e9f), maxLeafShift(m[1], out)) < 1e-6f,
+                    (sp.form == TreeSpecies.Form.GROUND ? "Gelände" : "Gegenstand") + " bewegt sich im Sturm nicht");
         } else {
             wind(sp, a, m[1]);
         }
@@ -278,7 +283,7 @@ public final class TreeCheck {
         TreeSeason s = sp.season;
         TreeSeason.Look winter = s.look(20, 0), spring = s.look(s.leafOut + s.flushDays / 2, 0),
                 summer = s.look(200, 0), fall = s.look((s.colorFull + s.bare) / 2, 0);
-        if (sp.form == TreeSpecies.Form.GROUND) return;
+        if (sp.form == TreeSpecies.Form.GROUND || sp.form == TreeSpecies.Form.OBJECT) return;
         if (s.persistent || s.evergreen) {
             boolean all = true;
             for (int d = 0; d < 365; d += 5) all &= s.look(d, 0).lo == 0 && s.look(d, 0).hi == 1;

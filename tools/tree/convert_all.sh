@@ -72,3 +72,6 @@ $PY tools/tree/gltf2dtree.py "$T/footpath/scene.gltf" $G/footpath/footpath.dtree
 unzip -q -o Assets/Grass/1024_mat_025_grass.zip -d "$T/mat025"
 python3 -I -c "import sys; from PIL import Image; Image.open(sys.argv[1]).convert('RGB').save(sys.argv[2], quality=88)" \
   "$(find "$T/mat025" -name '*basecolor*' | head -1)" $G/ground/mat025_grass.jpg
+
+# ---------------------------------------------------------------- Boden (com.dan.ground)
+tools/ground/convert_ground.sh

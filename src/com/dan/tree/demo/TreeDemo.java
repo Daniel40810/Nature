@@ -33,7 +33,7 @@ import java.util.Random;
  *
  * <pre>
  * Fenster:  …Demo [ansicht variante stufe tag]
- * Bild:     …Demo --bild datei.png [einzel|hain|stufen] [variante] [stufe|auto] [tag] [wind m/s] [breite] [höhe] [zeit s]
+ * Bild:     …Demo --bild datei.png [einzel|hain|wiese|oben|gruppe|stufen] [variante] [stufe|auto] [tag] [wind m/s] [breite] [höhe] [zeit s]
  * </pre>
  */
 public final class TreeDemo {
@@ -44,18 +44,22 @@ public final class TreeDemo {
     static final String[] VIEWS = {"Einzelbaum", "Hain", "Stufen nebeneinander"};
     static final String[] GRASS_VIEWS = {"Büschel", "Wiese", "Stufen nebeneinander"};
     static final String[] GROUND_VIEWS = {"Gelände", "Gelände von oben", "Stufen nebeneinander"};
+    static final String[] OBJECT_VIEWS = {"Einzeln", "Gruppe", "Stufen nebeneinander"};
     static final String[] MONTHS = {"Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"};
     static final int[] MONTH_START = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
 
     final TreeSpecies sp;
     final SoftRenderer renderer = new SoftRenderer();
-    final TreeWind wind = new TreeWind();
+    public final TreeWind wind = new TreeWind();
     final Map<Integer, TreeMesh> meshes = new HashMap<>();
 
     volatile int view, variant, lodChoice = -1, day = 180;
     volatile float snow;
     volatile boolean running = true;
-    volatile double yaw = 0.6, pitch = 0.12, dist = -1;
+    /** Kamera: Drehung um die Hochachse und Neigung (rad), Abstand (m; −1 = nach Größe der Art) */
+    public volatile double yaw = 0.6, pitch = 0.12, dist = -1;
+    /** Drehung beim Start statt der Vorgabe je Ansicht (NaN = Vorgabe) */
+    public double startYaw = Double.NaN;
     volatile String status = "";
     float time;
 
@@ -72,6 +76,13 @@ public final class TreeDemo {
         /** Alle Stücke in einem Kreis vom Radius r (m) um den Ursprung. */
         List<Placed> place(int variants, float radius);
     }
+
+    /** Weitere Arten in derselben Szene (etwa Sandsäcke und Gras am Graben): Art und ihre Stücke, Stufe nach Entfernung. */
+    public record Extra(TreeSpecies species, List<Placed> items) {}
+
+    /** Werden in jeder Ansicht zusätzlich gezeichnet. */
+    public final List<Extra> extras = new ArrayList<>();
+    private final Map<TreeSpecies, Map<Integer, TreeMesh>> extraMeshes = new HashMap<>();
 
     /** Optional: Anordnung für Ansicht 1, Bodentextur und ihre Kachelgröße (m). */
     public Layout layout;
@@ -95,7 +106,7 @@ public final class TreeDemo {
             return;
         }
         if (args.length > 0) d.view = Integer.parseInt(args[0]);
-        d.yaw = defaultYaw(d.view);
+        d.yaw = Double.isNaN(d.startYaw) ? defaultYaw(d.view) : d.startYaw;
         if (args.length > 1) d.variant = Integer.parseInt(args[1]);
         if (args.length > 2) d.lodChoice = args[2].equals("auto") ? -1 : Integer.parseInt(args[2]);
         if (args.length > 3) d.day = Integer.parseInt(args[3]);
@@ -107,8 +118,8 @@ public final class TreeDemo {
     static void image(TreeDemo d, String[] a) throws Exception {
         String file = a.length > 1 ? a[1] : "baum.png";
         String v = a.length > 2 ? a[2] : "einzel";
-        d.view = v.startsWith("hain") || v.startsWith("wiese") || v.startsWith("oben") ? 1 : v.startsWith("stuf") ? 2 : 0;
-        d.yaw = defaultYaw(d.view);
+        d.view = v.startsWith("hain") || v.startsWith("wiese") || v.startsWith("oben") || v.startsWith("grup") ? 1 : v.startsWith("stuf") ? 2 : 0;
+        d.yaw = Double.isNaN(d.startYaw) ? defaultYaw(d.view) : d.startYaw;
         d.variant = a.length > 3 ? Integer.parseInt(a[3]) : 0;
         d.lodChoice = a.length > 4 && !a[4].equals("auto") ? Integer.parseInt(a[4]) : -1;
         d.day = a.length > 5 ? Integer.parseInt(a[5]) : 180;
@@ -135,10 +146,13 @@ public final class TreeDemo {
                 Random r = new Random(42);
                 List<float[]> pts = new ArrayList<>();
                 pts.add(new float[]{0, 0});
+                // Gegenstände: Fläche und Abstand nach ihrer Größe
+                float spread = sp.form == TreeSpecies.Form.OBJECT ? size(variant) * 10 : 70;
+                float gap = sp.form == TreeSpecies.Form.OBJECT ? size(variant) * 1.6f : 7.5f;
                 while (pts.size() < 14) {
-                    float x = (r.nextFloat() - 0.5f) * 70, z = (r.nextFloat() - 0.5f) * 70;
+                    float x = (r.nextFloat() - 0.5f) * spread, z = (r.nextFloat() - 0.5f) * spread;
                     boolean ok = true;
-                    for (float[] p : pts) ok &= Math.hypot(p[0] - x, p[1] - z) > 7.5;
+                    for (float[] p : pts) ok &= Math.hypot(p[0] - x, p[1] - z) > gap;
                     if (ok) pts.add(new float[]{x, z});
                 }
                 for (int i = 0; i < pts.size(); i++)
@@ -167,6 +181,7 @@ public final class TreeDemo {
     /** Maß für Kamera und Abstände: Höhe, bei Gelände der halbe Durchmesser. */
     float size(int v) {
         TreeMesh m = mesh(v, 3);
+        if (sp.form == TreeSpecies.Form.OBJECT) return Math.max(0.05f, Math.max(m.height, m.radius));
         return sp.form == TreeSpecies.Form.GROUND ? m.radius : Math.max(m.height, sp.form == TreeSpecies.Form.GRASS ? 0.05f : 1);
     }
 
@@ -176,11 +191,16 @@ public final class TreeDemo {
     }
 
     String[] views() {
-        return sp.form == TreeSpecies.Form.GRASS ? GRASS_VIEWS : sp.form == TreeSpecies.Form.GROUND ? GROUND_VIEWS : VIEWS;
+        return switch (sp.form) {
+            case GRASS -> GRASS_VIEWS;
+            case GROUND -> GROUND_VIEWS;
+            case OBJECT -> OBJECT_VIEWS;
+            default -> VIEWS;
+        };
     }
 
     String noun() {
-        return sp.form == TreeSpecies.Form.GRASS ? "Büschel" : sp.form == TreeSpecies.Form.GROUND ? "Stücke" : "Bäume";
+        return sp.form == TreeSpecies.Form.GRASS ? "Büschel" : sp.form == TreeSpecies.Form.TREE ? "Bäume" : "Stücke";
     }
 
     synchronized TreeMesh mesh(int v, int lod) {
@@ -205,6 +225,10 @@ public final class TreeDemo {
             case GROUND -> {
                 r = dist > 0 ? dist : view == 1 ? 2.0 * h : 1.6 * h;
                 ty = 0;
+            }
+            case OBJECT -> {
+                r = dist > 0 ? dist : view == 1 ? 5.5 * h : view == 2 ? 3.0 * h : 1.9 * h;
+                ty = h * 0.2f;
             }
             default -> {
                 r = dist > 0 ? dist : (view == 1 ? 3.2 * h : view == 2 ? 2.4 * h : 1.55 * h);
@@ -231,7 +255,8 @@ public final class TreeDemo {
         for (int i = 0; i < trees.size(); i++) {
             Placed p = trees.get(i);
             TreeAsset a = sp.load(p.variant);
-            float hh = (sp.form == TreeSpecies.Form.GROUND ? size(p.variant) : height(p.variant)) * p.scale;
+            boolean flat = sp.form == TreeSpecies.Form.GROUND || sp.form == TreeSpecies.Form.OBJECT;
+            float hh = (flat ? size(p.variant) : height(p.variant)) * p.scale;
             double d = Math.hypot(Math.hypot(e[0] - p.x, e[2] - p.z), e[1] - p.y - hh * 0.5);
             double rel = d / Math.max(hh, 0.05f);
             if (many && rel > sp.maxDistance) continue;
@@ -258,9 +283,40 @@ public final class TreeDemo {
                     new float[]{0.045f, 0.07f, 0.025f}, snow);
         for (Runnable r : draws) r.run();
         int count = perLod[0] + perLod[1] + perLod[2] + perLod[3];
+        for (Extra x : extras) tris += drawExtra(x, e);
         status = String.format("%s · %s · %d %s · %,d Dreiecke · Stufen %d/%d/%d/%d · Wind %.0f m/s",
                 sp.name, sp.variantNames[variant], count, noun(), tris, perLod[0], perLod[1], perLod[2], perLod[3], wind.speed);
         return renderer.finish();
+    }
+
+    /** Eine weitere Art der Szene zeichnen (Stufe nach Entfernung, Gras in der Ferne ausgedünnt); liefert die Dreiecke. */
+    int drawExtra(Extra x, float[] e) {
+        TreeSpecies s = x.species();
+        TreeSeason.Look look = s.season.look(day, snow);
+        Map<Integer, TreeMesh> cache;
+        synchronized (this) {
+            cache = extraMeshes.computeIfAbsent(s, k -> new HashMap<>());
+        }
+        int tris = 0, index = -1;
+        for (Placed p : x.items()) {
+            index++;
+            TreeMesh coarse = cache.computeIfAbsent(p.variant() * 10 + 3, k -> s.bake(p.variant(), 3));
+            float hh = Math.max(s.form == TreeSpecies.Form.TREE || s.form == TreeSpecies.Form.GRASS ? coarse.height
+                    : Math.max(coarse.height, coarse.radius), 0.05f) * p.scale();
+            double d = Math.hypot(Math.hypot(e[0] - p.x(), e[2] - p.z()), e[1] - p.y() - hh * 0.5);
+            double rel = d / hh;
+            if (rel > s.maxDistance) continue;
+            if (rel > s.fadeDistance && TreeBaker.hash(index, 97) < (rel - s.fadeDistance) / (s.maxDistance - s.fadeDistance)) continue;
+            float[] g = s.lodDistance;
+            int lod = p.fixedLod() >= 0 ? p.fixedLod() : rel < g[0] ? 0 : rel < g[1] ? 1 : rel < g[2] ? 2 : 3;
+            TreeMesh m = cache.computeIfAbsent(p.variant() * 10 + lod, k -> s.bake(p.variant(), lod));
+            TreeAsset a = s.load(p.variant());
+            float[] pos = new float[m.vertices * 3];
+            wind.displace(m, s, a.gustAttenuation, time, p.x(), p.y(), p.z(), p.yaw(), pos);
+            renderer.tree(m, pos, s, a, look, p.x(), p.y(), p.z(), p.yaw(), p.scale());
+            tris += m.triangles;
+        }
+        return tris;
     }
 
     // ------------------------------------------------------------------ Fenster
